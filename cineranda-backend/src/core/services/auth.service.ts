@@ -1,17 +1,17 @@
 import jwt from 'jsonwebtoken';
-import mongoose from 'mongoose';
+import mongoose, { Types } from 'mongoose'; // Import Types
 import { UserRepository } from '../../data/repositories/user.repository';
 import { IUser } from '../../data/models/user.model';
 import AppError from '../../utils/AppError';
 import config from '../../config';
-import crypto from 'crypto'; // Import the crypto module
-import bcrypt from 'bcrypt';
-import { User } from '../../data/models/user.model'; // Import the User model
+import crypto from 'crypto';
+import { User } from '../../data/models/user.model';
+import speakeasy from 'speakeasy';
+import qrcode from 'qrcode';
 
-// Define a type that includes MongoDB's _id property
-type UserWithId = IUser & {
-  _id: mongoose.Types.ObjectId | string;
-};
+// --- FIX 1: DEFINE THE UserWithId TYPE ---
+// This type represents a Mongoose document based on IUser with a correctly typed _id.
+type UserWithId = IUser & { _id: Types.ObjectId };
 
 export class AuthService {
   private userRepository: UserRepository;
@@ -27,7 +27,7 @@ export class AuthService {
     pin: string;
     firstName?: string;
     lastName?: string;
-    email?: string; // Make email optional
+    email?: string;
   }): Promise<{ user: Partial<IUser>; token: string; refreshToken: string }> {
     // Check if user already exists
     const existingUsername = await this.userRepository.findByUsername(userData.username);
@@ -72,8 +72,8 @@ export class AuthService {
 
     // Return user data (without sensitive fields) and tokens
     const userResponse = { ...user.toObject() };
-    delete userResponse.pin;
-    delete userResponse.password;
+    delete (userResponse as any).pin;
+    delete (userResponse as any).password;
 
     return {
       user: userResponse,
@@ -494,30 +494,105 @@ export class AuthService {
   /**
    * Handles login for an admin using email and password.
    */
-  async adminLogin(email: string, password: string): Promise<{ token: string; user: Partial<IUser> } | null> {
-    const user = (await this.userRepository.findOne({ email, role: 'admin' }, '+password')) as UserWithId;
+  async adminLogin(email: string, password: string): Promise<{ token?: string; user?: Partial<IUser>; twoFactorRequired?: boolean } | null> {
+    const user = await User.findOne({ email, role: 'admin' }).select('+password');
 
     if (!user || !(await user.comparePassword(password))) {
       return null;
     }
 
-    // --- ADD THIS DEBUGGING LINE ---
-    console.log(`[AuthService - Login] Found admin user with ID: ${user._id}`);
+    if (user.isTwoFactorEnabled) {
+      return { twoFactorRequired: true };
+    }
 
-    const token = this.generateToken(user);
+    const token = this.generateToken(user); // This now works correctly
     const userObject = user.toObject();
-    delete userObject.password;
-    delete userObject.pin;
+    delete (userObject as any).password;
+    delete (userObject as any).pin;
 
     return { token, user: userObject };
   }
 
-  private generateToken(user: UserWithId): string {
+  /**
+   * Generates a temporary 2FA secret and a QR code for setup.
+   */
+  async setup2FA(): Promise<{ secret: string; qrCodeUrl: string }> {
+    const secret = speakeasy.generateSecret({
+      name: 'Cineranda Admin', // This name will appear in the user's authenticator app
+    });
+
+    const qrCodeUrl = await qrcode.toDataURL(secret.otpauth_url!);
+    
+    return {
+      secret: secret.base32, // The secret key to be stored temporarily
+      qrCodeUrl,
+    };
+  }
+
+  /**
+   * Verifies the initial 2FA token and permanently saves the secret to the user.
+   */
+  async verify2FA(userId: string, token: string, secret: string): Promise<boolean> {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new AppError('User not found.', 404);
+    }
+
+    const isVerified = speakeasy.totp.verify({
+      secret: secret,
+      encoding: 'base32',
+      token: token,
+    });
+
+    if (isVerified) {
+      user.twoFactorSecret = secret;
+      user.isTwoFactorEnabled = true;
+      await user.save();
+    }
+
+    return isVerified;
+  }
+
+  /**
+   * Validates a 2FA token during the login process.
+   */
+  async validate2FAToken(email: string, token: string): Promise<{ token: string; user: Partial<IUser> } | null> {
+    const user = await User.findOne({ email, role: 'admin' }).select('+twoFactorSecret');
+
+    if (!user || !user.twoFactorSecret) {
+      throw new AppError('2FA is not enabled for this user or user not found.', 400);
+    }
+
+    const isVerified = speakeasy.totp.verify({
+      secret: user.twoFactorSecret,
+      encoding: 'base32',
+      token: token,
+      window: 1,
+    });
+
+    if (!isVerified) {
+      return null;
+    }
+
+    const jwtToken = this.generateToken(user); // This now works correctly
+    const userObject = user.toObject();
+    delete (userObject as any).password;
+    delete (userObject as any).pin;
+    delete (userObject as any).twoFactorSecret;
+
+    return { token: jwtToken, user: userObject };
+  }
+
+  // --- FIX: UPDATE THE TOKEN GENERATION METHODS ---
+  // The parameter type is correct, but we need to help TypeScript inside the function.
+  private generateToken(user: UserWithId | IUser): string {
     const options: any = { expiresIn: config.jwt.expiration };
     
     return jwt.sign(
       { 
-        userId: user._id.toString(), 
+        // Cast `user._id` to `any` to access .toString() without type errors.
+        // This is safe because we know every Mongoose document has an _id.
+        userId: (user._id as any).toString(), 
         role: user.role,
         username: user.username
       },
@@ -526,12 +601,13 @@ export class AuthService {
     );
   }
 
-  private generateRefreshToken(user: UserWithId): string {
+  private generateRefreshToken(user: UserWithId | IUser): string {
     const options: any = { expiresIn: config.jwt.refreshExpiration };
     
     return jwt.sign(
       { 
-        userId: user._id.toString()
+        // Cast `user._id` to `any` here as well.
+        userId: (user._id as any).toString()
       },
       config.jwt.refreshSecret,
       options

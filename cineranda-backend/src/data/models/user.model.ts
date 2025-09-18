@@ -1,34 +1,32 @@
-import mongoose, { Schema, Document, model, Model } from 'mongoose'; // Corrected import
+import mongoose, { Schema, Document, model } from 'mongoose';
 import bcrypt from 'bcryptjs';
 
 // User interface
 export interface IUser extends Document {
   username: string;
-  email?: string; // Make email optional
-  password?: string; // Make password optional
-  phoneNumber: string; // Add phone number
-  pin: string; // Add PIN
+  email?: string;
+  password?: string;
+  phoneNumber: string;
+  pin: string;
   firstName?: string;
   lastName?: string;
   role: string;
-  location?: string; // Make location optional
+  location?: string;
   isActive: boolean;
-  isEmailVerified?: boolean; // Make email verification optional
+  isEmailVerified?: boolean;
   emailVerificationToken?: string;
-  passwordResetToken?: string; // Add this line
-  passwordResetExpires?: Date; // Add this line
+  passwordResetToken?: string;
+  passwordResetExpires?: Date;
   pinResetCode?: string;
   pinResetExpires?: Date;
   lastActive?: Date;
   loginCount?: number;
-  // Add watch history field
   watchHistory?: Array<{
     contentId: mongoose.Types.ObjectId;
     progress: number;
     lastWatched: Date;
     watchTime: number;
   }>;
-  // Add purchased content field
   purchasedContent?: Array<{
     contentId: mongoose.Types.ObjectId;
     purchaseDate: Date;
@@ -36,17 +34,17 @@ export interface IUser extends Document {
     price: number;
     currency: string;
   }>;
-  preferredLanguage?: 'kinyarwanda' | 'english' | 'french'; // Add preferred language
-  theme?: 'light' | 'dark'; // Add theme
+  preferredLanguage?: 'kinyarwanda' | 'english' | 'french';
+  theme?: 'light' | 'dark';
   coinWallet?: {
     balance: number;
     totalEarned: number;
     totalSpent: number;
-  }; // Add coin wallet
-  comparePassword(candidatePassword: string): Promise<boolean>; // Make non-optional
-  comparePin(candidatePin: string): Promise<boolean>; // Make non-optional
-  toObject(): any;
-  save(): Promise<any>;
+  };
+  isTwoFactorEnabled?: boolean; // Added for 2FA
+  twoFactorSecret?: string;   // Added for 2FA
+  comparePassword(candidatePassword: string): Promise<boolean>;
+  comparePin(candidatePin: string): Promise<boolean>;
 }
 
 // User schema
@@ -61,13 +59,13 @@ const userSchema = new Schema<IUser>(
     email: {
       type: String,
       unique: true,
-      sparse: true, // This is the key fix - only index documents with email
+      sparse: true,
       trim: true,
       lowercase: true,
     },
     password: {
       type: String,
-      select: false, // Don't return password by default
+      select: false,
     },
     phoneNumber: {
       type: String,
@@ -78,9 +76,8 @@ const userSchema = new Schema<IUser>(
     pin: {
       type: String,
       required: true,
-      select: false, // Don't return PIN by default
+      select: false,
     },
-    // Keep other fields as they were
     firstName: {
       type: String,
       trim: true,
@@ -147,14 +144,6 @@ const userSchema = new Schema<IUser>(
       },
       default: {},
     },
-    passwordResetToken: {
-      type: String,
-      select: false,
-    },
-    passwordResetExpires: {
-      type: Date,
-      select: false,
-    },
     pinResetCode: {
       type: String,
       select: false,
@@ -163,7 +152,23 @@ const userSchema = new Schema<IUser>(
       type: Date,
       select: false,
     },
-    // Keep other fields
+    passwordResetToken: {
+      type: String,
+      select: false,
+    },
+    passwordResetExpires: {
+      type: Date,
+      select: false,
+    },
+    // --- ADDED 2FA FIELDS TO SCHEMA ---
+    isTwoFactorEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    twoFactorSecret: {
+      type: String,
+      select: false,
+    },
   },
   {
     timestamps: true,
@@ -171,22 +176,20 @@ const userSchema = new Schema<IUser>(
 );
 
 // Password hashing middleware
-userSchema.pre('save', async function (next) {
-  // Only hash the password if it's modified or new
+userSchema.pre<IUser>('save', async function (next) {
   if (this.isModified('password') && this.password) {
     try {
       const salt = await bcrypt.genSalt(10);
-      this.password = (await bcrypt.hash(this.password, salt)) as unknown as string;
+      this.password = await bcrypt.hash(this.password, salt);
     } catch (error: any) {
       return next(error);
     }
   }
 
-  // Hash PIN if modified
   if (this.isModified('pin') && this.pin) {
     try {
       const salt = await bcrypt.genSalt(10);
-      this.pin = (await bcrypt.hash(this.pin, salt)) as unknown as string;
+      this.pin = await bcrypt.hash(this.pin, salt);
     } catch (error: any) {
       return next(error);
     }
@@ -199,22 +202,16 @@ userSchema.pre('save', async function (next) {
 userSchema.methods.comparePassword = async function (
   candidatePassword: string
 ): Promise<boolean> {
-  try {
-    return await bcrypt.compare(candidatePassword, this.password as string);
-  } catch (error) {
-    return false;
-  }
+  if (!this.password) return false;
+  return bcrypt.compare(candidatePassword, this.password);
 };
 
 // Compare PIN method
 userSchema.methods.comparePin = async function (
   candidatePin: string
 ): Promise<boolean> {
-  try {
-    return await bcrypt.compare(candidatePin, this.pin as string);
-  } catch (error) {
-    return false;
-  }
+  if (!this.pin) return false;
+  return bcrypt.compare(candidatePin, this.pin);
 };
 
 // Create the model

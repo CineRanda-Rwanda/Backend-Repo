@@ -301,6 +301,73 @@ export class AuthController {
         return next(new AppError('Invalid email or password.', 401));
       }
 
+      // --- HANDLE 2FA RESPONSE ---
+      if (result.twoFactorRequired) {
+        return res.status(200).json({
+          status: 'success',
+          message: '2FA token required to complete login.',
+        });
+      }
+
+      res.status(200).json({
+        status: 'success',
+        token: result.token,
+        user: result.user,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // --- NEW 2FA METHODS ---
+
+  setup2FA = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const { qrCodeUrl, secret } = await this.authService.setup2FA();
+      // The secret is sent back to the client to be used in the verification step.
+      res.status(200).json({
+        status: 'success',
+        data: { qrCodeUrl, secret },
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  verify2FA = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.user?._id;
+      const { token, secret } = req.body;
+
+      if (!userId || !token || !secret) {
+        return next(new AppError('User ID, token, and secret are required.', 400));
+      }
+
+      const isVerified = await this.authService.verify2FA(userId.toString(), token, secret);
+
+      if (!isVerified) {
+        return next(new AppError('Invalid 2FA token.', 400));
+      }
+
+      res.status(200).json({ status: 'success', message: '2FA has been enabled successfully.' });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  authenticate2FA = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { email, token } = req.body;
+      if (!email || !token) {
+        return next(new AppError('Email and 2FA token are required.', 400));
+      }
+
+      const result = await this.authService.validate2FAToken(email, token);
+
+      if (!result) {
+        return next(new AppError('Invalid 2FA token.', 401));
+      }
+
       res.status(200).json({
         status: 'success',
         token: result.token,

@@ -14,8 +14,7 @@ router.post('/refresh-token', authController.refreshToken);
 router.get('/verify-phone', authController.verifyPhone);
 router.post('/forgot-password', authController.forgotPassword);
 router.post('/reset-password', authController.resetPassword);
-
-// Use the new, clean implementation for forgot/reset PIN
+router.post('/2fa/authenticate', authController.authenticate2FA);
 router.post('/forgot-pin', authController.forgotPin);
 router.post('/reset-pin', authController.resetPin);
 
@@ -33,6 +32,8 @@ router.post('/change-password', authController.changePassword);
 // This is the explicit admin route you requested. 
 // It points to the exact same secure controller method.
 router.post('/admin/change-password', authController.changePassword);
+router.post('/2fa/setup', authController.setup2FA);
+router.post('/2fa/verify', authController.verify2FA);
 
 
 export default router;
