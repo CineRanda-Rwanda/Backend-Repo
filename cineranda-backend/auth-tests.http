@@ -1,0 +1,53 @@
+@baseUrl = http://localhost:5000/api/v1
+@contentType = application/json
+
+### Register a new user
+POST {{baseUrl}}/auth/register
+Content-Type: {{contentType}}
+
+{
+  "username": "testuser",
+  "email": "test@example.com",
+  "password": "password123",
+  "firstName": "Test",
+  "lastName": "User",
+  "location": "rwanda"
+}
+
+### Login
+POST {{baseUrl}}/auth/login
+Content-Type: {{contentType}}
+
+{
+  "email": "test@example.com",
+  "password": "password123"
+}
+
+### Save the token from the login response and use it below
+@authToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...your-token-here...
+
+### Get user profile
+GET {{baseUrl}}/auth/profile
+Authorization: Bearer {{authToken}}
+
+### Update profile
+PATCH {{baseUrl}}/auth/profile
+Content-Type: {{contentType}}
+Authorization: Bearer {{authToken}}
+
+{
+  "firstName": "Updated",
+  "lastName": "Name",
+  "preferredLanguage": "english",
+  "theme": "dark"
+}
+
+### Change password
+POST {{baseUrl}}/auth/change-password
+Content-Type: {{contentType}}
+Authorization: Bearer {{authToken}}
+
+{
+  "currentPassword": "password123",
+  "newPassword": "newPassword123"
+}

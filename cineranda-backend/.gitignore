@@ -1,0 +1,34 @@
+# Dependencies
+/node_modules
+
+# Build output
+/dist
+/build
+
+# Environment variables
+# Contains secrets like database credentials and JWT secrets. NEVER commit this file.
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDE and editor directories
+.vscode/
+.idea/
+
+# Test reports and coverage
+coverage/
+.nyc_output/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.swp
