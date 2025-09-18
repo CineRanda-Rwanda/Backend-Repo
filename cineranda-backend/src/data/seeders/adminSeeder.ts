@@ -1,5 +1,5 @@
 import { User } from '../models/user.model';
-import { connectDB } from '../databaseConnection';
+import connectDB from '../databaseConnection'; // Corrected: Use default import
 import dotenv from 'dotenv';
 
 // Load environment variables from the root .env file
@@ -7,7 +7,7 @@ dotenv.config({ path: '../../.env' });
 
 const seedAdmin = async () => {
   try {
-    await connectDB();
+    await connectDB.connect(); // Corrected: Call the 'connect' method on the imported object
 
     const adminEmail = "nsabagasaniemm3@gmail.com";
     const adminPassword = "#Emmanuel123#";

@@ -1,79 +1,50 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import { User, IUser } from '../data/models/user.model';
 import AppError from '../utils/AppError';
-import config from '../config';
-import { UserRepository } from '../data/repositories/user.repository';
+import config from '../config'; // Use the config file for secrets
 
-// Extend Express Request to include user information
-declare global {
-  namespace Express {
-    interface Request {
-      user?: any;
-      token?: string;
-    }
-  }
+// This interface will be used by all authenticated routes
+interface AuthRequest extends Request {
+  user?: IUser; // Use the IUser interface
 }
 
-const userRepository = new UserRepository();
-
-export const authenticate = async (
-  req: Request,
-  res: Response,
-  next: NextFunction
-) => {
+export const authenticate = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    // 1) Check if token exists
     let token;
-    if (
-      req.headers.authorization &&
-      req.headers.authorization.startsWith('Bearer')
-    ) {
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
       token = req.headers.authorization.split(' ')[1];
     }
 
     if (!token) {
-      return next(new AppError('Authentication required', 401));
+      return next(new AppError('You are not logged in. Please log in to get access.', 401));
     }
 
-    // 2) Verify token
-    const decoded = jwt.verify(token, config.jwt.secret) as { 
-      userId: string;
-      role: string;
-      location: string;
-    };
+    // --- THIS IS THE FIX ---
+    // The token payload contains 'userId', not 'id'. We need to look for the correct property.
+    const decoded = jwt.verify(token, config.jwt.secret) as { userId: string };
 
-    // 3) Check if user exists
-    const user = await userRepository.findById(decoded.userId);
-    if (!user) {
-      return next(new AppError('User not found', 401));
+    // Use the correct property from the decoded token
+    const currentUser = await User.findById(decoded.userId);
+
+    if (!currentUser) {
+      return next(new AppError('The user belonging to this token no longer exists.', 401));
     }
 
-    // 4) Check if user is still active
-    if (!user.isActive) {
-      return next(new AppError('Your account has been deactivated', 401));
-    }
-
-    // 5) Grant access
-    req.user = user;
-    req.token = token;
+    req.user = currentUser;
     next();
   } catch (error) {
-    return next(new AppError('Authentication failed', 401));
+    return next(new AppError('Invalid token. Please log in again.', 401));
   }
 };
 
-export const authorize = (...roles: string[]) => {
-  return (req: Request, res: Response, next: NextFunction) => {
-    if (!req.user) {
-      return next(new AppError('Authentication required', 401));
-    }
-    
-    if (!roles.includes(req.user.role)) {
-      return next(
-        new AppError('You do not have permission to perform this action', 403)
-      );
-    }
-    
-    next();
-  };
+/**
+ * Middleware to restrict access to admin users only.
+ */
+export const restrictToAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
+  if (!req.user || req.user.role !== 'admin') {
+    return next(new AppError('You do not have permission to perform this action.', 403));
+  }
+  
+  next();
 };

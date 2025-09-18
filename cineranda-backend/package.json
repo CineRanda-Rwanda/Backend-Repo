@@ -12,7 +12,8 @@
     "build": "tsc",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage"
+    "test:coverage": "jest --coverage",
+    "seed:admin": "ts-node src/data/seeders/adminSeeder.ts"
   },
   "keywords": [],
   "author": "",

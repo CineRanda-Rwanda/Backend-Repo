@@ -4,7 +4,7 @@ import { UserRepository } from '../../data/repositories/user.repository';
 import { IUser } from '../../data/models/user.model';
 import AppError from '../../utils/AppError';
 import config from '../../config';
-import crypto from 'crypto';
+import crypto from 'crypto'; // Import the crypto module
 import bcrypt from 'bcrypt';
 import { User } from '../../data/models/user.model'; // Import the User model
 
@@ -167,53 +167,70 @@ export class AuthService {
     return true;
   }
 
-  async forgotPassword(email: string): Promise<void> {
-    // Find user by email - explicitly type as UserWithId
-    const user = await this.userRepository.findByEmail(email) as UserWithId;
+  /**
+   * Generates a password reset token for a user.
+   * In a real app, this would also trigger an email.
+   * @param email The user's email address.
+   * @returns The unhashed reset token (for testing/emailing).
+   */
+  async forgotPassword(email: string): Promise<string | null> {
+    const user = await User.findOne({ email });
     if (!user) {
-      // Don't reveal that email doesn't exist (security best practice)
-      return;
+      // Don't reveal that the user doesn't exist.
+      return null;
     }
-    
-    // Generate reset token (using crypto would be better in a real app)
-    const resetToken = Math.random().toString(36).substring(2, 15);
-    
-    // Save reset token and expiration
-    const resetExpires = new Date();
-    resetExpires.setHours(resetExpires.getHours() + 1); // 1 hour expiration
-    
-    // Cast _id to string
-    const userId = user._id.toString();
-    await this.userRepository.update(userId, {
-      passwordResetToken: resetToken,
-      passwordResetExpires: resetExpires
-    });
-    
-    // In a real app, send an email with the reset link
-    // For this project, we'll just return the token for testing
-    return;
+
+    // 1. Generate a random token
+    const resetToken = crypto.randomBytes(32).toString('hex');
+
+    // 2. Hash the token and save it to the database for security
+    user.passwordResetToken = crypto
+      .createHash('sha256')
+      .update(resetToken)
+      .digest('hex');
+
+    // 3. Set an expiration time (e.g., 10 minutes)
+    user.passwordResetExpires = new Date(Date.now() + 10 * 60 * 1000);
+
+    await user.save();
+
+    // 4. Return the UN-hashed token (this is what the user receives)
+    return resetToken;
   }
 
+  /**
+   * Resets a user's password using a valid token.
+   * @param token The unhashed token from the user.
+   * @param newPassword The new password.
+   */
   async resetPassword(token: string, newPassword: string): Promise<boolean> {
-    // Find user with this reset token and check if it's expired - cast to UserWithId
-    const user = await this.userRepository.findOne({
-      passwordResetToken: token,
-      passwordResetExpires: { $gt: new Date() }
-    }) as UserWithId;
-    
+    // 1. Hash the incoming token to match the one in the DB
+    const hashedToken = crypto
+      .createHash('sha256')
+      .update(token)
+      .digest('hex');
+
+    // 2. Find the user by the hashed token and check if it's expired
+    const user = await User.findOne({
+      passwordResetToken: hashedToken,
+      passwordResetExpires: { $gt: Date.now() },
+    });
+
     if (!user) {
-      throw new AppError('Invalid or expired reset token', 400);
+      // Token is invalid or has expired
+      return false;
     }
-    
-    // Update password
+
+    // 3. Set the new password and clear the reset fields
     user.password = newPassword;
     user.passwordResetToken = undefined;
     user.passwordResetExpires = undefined;
-    await user.save();
-    
+
+    await user.save(); // The pre-save hook will hash the new password
+
     return true;
   }
-  
+
   async getProfile(userId: string): Promise<Partial<IUser>> {
     // Cast to UserWithId
     const user = await this.userRepository.findById(userId) as UserWithId;
@@ -472,6 +489,27 @@ export class AuthService {
 
     console.log(`Successfully reset PIN for user ${user.username}`);
     return true;
+  }
+
+  /**
+   * Handles login for an admin using email and password.
+   */
+  async adminLogin(email: string, password: string): Promise<{ token: string; user: Partial<IUser> } | null> {
+    const user = (await this.userRepository.findOne({ email, role: 'admin' }, '+password')) as UserWithId;
+
+    if (!user || !(await user.comparePassword(password))) {
+      return null;
+    }
+
+    // --- ADD THIS DEBUGGING LINE ---
+    console.log(`[AuthService - Login] Found admin user with ID: ${user._id}`);
+
+    const token = this.generateToken(user);
+    const userObject = user.toObject();
+    delete userObject.password;
+    delete userObject.pin;
+
+    return { token, user: userObject };
   }
 
   private generateToken(user: UserWithId): string {

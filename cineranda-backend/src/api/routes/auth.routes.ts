@@ -9,20 +9,30 @@ const authController = new AuthController();
 // Kept your existing public routes
 router.post('/register', authController.register);
 router.post('/login', authController.login);
+router.post('/admin/login', authController.adminLogin);
 router.post('/refresh-token', authController.refreshToken);
 router.get('/verify-phone', authController.verifyPhone);
+router.post('/forgot-password', authController.forgotPassword);
+router.post('/reset-password', authController.resetPassword);
 
 // Use the new, clean implementation for forgot/reset PIN
 router.post('/forgot-pin', authController.forgotPin);
 router.post('/reset-pin', authController.resetPin);
 
 // --- PROTECTED ROUTES ---
-// This middleware protects all routes defined after it
-router.use(authenticate); 
+// Any route below this line will require a valid token
+router.use(authenticate);
 
-// Kept your existing protected routes
 router.get('/profile', authController.getProfile);
 router.patch('/profile', authController.updateProfile);
 router.post('/change-pin', authController.changePin);
+
+// This is the standard route for any user to change their own password
+router.post('/change-password', authController.changePassword);
+
+// This is the explicit admin route you requested. 
+// It points to the exact same secure controller method.
+router.post('/admin/change-password', authController.changePassword);
+
 
 export default router;

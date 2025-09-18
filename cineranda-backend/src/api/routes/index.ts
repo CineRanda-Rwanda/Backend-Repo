@@ -1,10 +1,13 @@
 import { Router } from 'express';
 import authRoutes from './auth.routes';
-// Import other routes as they are created
+import adminRoutes from './admin.routes'; // Add this line to import admin routes
 
 const router = Router();
 
+// Keep your existing auth routes
 router.use('/auth', authRoutes);
-// Add other routes as they are created
+
+// Add this line to mount the admin routes under the /admin path
+router.use('/admin', adminRoutes);
 
 export default router;

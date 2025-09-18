@@ -15,8 +15,10 @@ export interface IUser extends Document {
   isActive: boolean;
   isEmailVerified?: boolean; // Make email verification optional
   emailVerificationToken?: string;
-  passwordResetToken?: string;
-  passwordResetExpires?: Date;
+  passwordResetToken?: string; // Add this line
+  passwordResetExpires?: Date; // Add this line
+  pinResetCode?: string;
+  pinResetExpires?: Date;
   lastActive?: Date;
   loginCount?: number;
   // Add watch history field
@@ -41,8 +43,6 @@ export interface IUser extends Document {
     totalEarned: number;
     totalSpent: number;
   }; // Add coin wallet
-  pinResetCode?: string;
-  pinResetExpires?: Date;
   comparePassword(candidatePassword: string): Promise<boolean>; // Make non-optional
   comparePin(candidatePin: string): Promise<boolean>; // Make non-optional
   toObject(): any;
@@ -149,7 +149,11 @@ const userSchema = new Schema<IUser>(
     },
     passwordResetToken: {
       type: String,
-      // Some validation or transformation here
+      select: false,
+    },
+    passwordResetExpires: {
+      type: Date,
+      select: false,
     },
     pinResetCode: {
       type: String,
