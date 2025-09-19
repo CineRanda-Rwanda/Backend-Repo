@@ -74,4 +74,96 @@ export class ContentController {
       next(error);
     }
   };
+
+  updateContent = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+      const contentToUpdate = await Content.findById(id);
+
+      if (!contentToUpdate) {
+        return next(new AppError('No content found with that ID', 404));
+      }
+
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+      const updates = { ...req.body };
+
+      // Handle poster image replacement
+      if (files.posterImage?.[0]) {
+        // We can safely delete the poster because it's a required field
+        await this.s3Service.deleteFile(contentToUpdate.posterImageUrl);
+        updates.posterImageUrl = await this.s3Service.uploadFile(files.posterImage[0], 'posters');
+      }
+
+      // Handle movie file replacement
+      if (files.movieFile?.[0] && contentToUpdate.contentType === 'Movie') {
+        // --- FIX: Check if movieFileUrl exists before trying to delete it ---
+        if (contentToUpdate.movieFileUrl) {
+          await this.s3Service.deleteFile(contentToUpdate.movieFileUrl);
+        }
+        updates.movieFileUrl = await this.s3Service.uploadFile(files.movieFile[0], 'movies');
+      }
+
+      // (We can add subtitle replacement logic here later if needed)
+
+      const updatedContent = await Content.findByIdAndUpdate(id, updates, {
+        new: true,
+        runValidators: true,
+      });
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Content updated successfully.',
+        data: {
+          content: updatedContent,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  deleteContent = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+      const contentToDelete = await Content.findById(id);
+
+      if (!contentToDelete) {
+        return next(new AppError('No content found with that ID', 404));
+      }
+
+      // --- [DEBUG] Log the entire object we are about to delete ---
+      console.log('--- [DEBUG] Content to delete: ---', JSON.stringify(contentToDelete, null, 2));
+
+      // --- Delete all associated files from S3 ---
+      // 1. Delete poster image
+      await this.s3Service.deleteFile(contentToDelete.posterImageUrl);
+
+      // 2. Delete movie file (if it's a movie and the URL exists)
+      if (contentToDelete.contentType === 'Movie' && contentToDelete.movieFileUrl) {
+        console.log(`--- [DEBUG] Attempting to delete movie file: ${contentToDelete.movieFileUrl} ---`);
+        await this.s3Service.deleteFile(contentToDelete.movieFileUrl);
+      }
+
+      // 3. Delete subtitles (if they exist)
+      if (contentToDelete.subtitles) {
+        if (contentToDelete.subtitles.en) await this.s3Service.deleteFile(contentToDelete.subtitles.en);
+        if (contentToDelete.subtitles.fr) await this.s3Service.deleteFile(contentToDelete.subtitles.fr);
+        if (contentToDelete.subtitles.kin) await this.s3Service.deleteFile(contentToDelete.subtitles.kin);
+      }
+      
+      // (We can add logic here later to delete all episode videos for a series)
+
+      // --- Finally, delete the document from MongoDB ---
+      await Content.findByIdAndDelete(id);
+
+      // Respond with 204 No Content, which is standard for successful deletions
+      res.status(204).json({
+        status: 'success',
+        data: null,
+      });
+
+    } catch (error) {
+      next(error);
+    }
+  };
 }

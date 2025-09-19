@@ -1,6 +1,6 @@
 /// <reference types="multer" />
 
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import config from '../../config';
 import crypto from 'crypto';
 
@@ -58,6 +58,43 @@ export class S3Service {
     }
   }
 
-  // We will implement this later when we build the DELETE endpoint.
-  // async deleteFile(fileUrl: string): Promise<void> { ... }
+  /**
+   * Deletes a file from the S3 bucket using its public URL.
+   * @param fileUrl The full public URL of the file to delete.
+   */
+  async deleteFile(fileUrl: string): Promise<void> {
+    if (!fileUrl) {
+      console.log('Skipping S3 delete: fileUrl is empty.');
+      return;
+    }
+
+    try {
+      const url = new URL(fileUrl);
+      const keyFromPath = url.pathname.substring(1);
+
+      // --- FIX: Decode the key to handle spaces and other special characters ---
+      const decodedKey = decodeURIComponent(keyFromPath);
+
+      if (!decodedKey) {
+        throw new Error('Could not extract a valid key from the file URL.');
+      }
+
+      const command = new DeleteObjectCommand({
+        Bucket: this.bucketName,
+        Key: decodedKey, // Use the decoded key
+      });
+
+      await this.s3Client.send(command);
+      console.log(`Successfully deleted ${decodedKey} from S3.`);
+    } catch (error) {
+      console.error(`Failed to delete file from S3: ${fileUrl}`, error);
+      
+      // --- FIX: Check the type of 'error' before accessing its properties ---
+      if (error instanceof Error) {
+        throw new Error(`S3 Deletion Failed: ${error.message}`);
+      } else {
+        throw new Error(`S3 Deletion Failed: An unknown error occurred.`);
+      }
+    }
+  }
 }

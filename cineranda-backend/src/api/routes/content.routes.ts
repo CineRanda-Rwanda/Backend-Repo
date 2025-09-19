@@ -19,9 +19,26 @@ const contentUpload = upload.fields([
 router.post(
   '/',
   authenticate,
-  authorize(['admin']), // Protect this route for admins only
+  authorize(['admin']),
   contentUpload,
   contentController.createContent
+);
+
+// PATCH /api/v1/content/:id - Update existing content (Admin only)
+router.patch(
+  '/:id',
+  authenticate,
+  authorize(['admin']),
+  contentUpload,
+  contentController.updateContent
+);
+
+// DELETE /api/v1/content/:id - Delete content (Admin only)
+router.delete(
+  '/:id',
+  authenticate,
+  authorize(['admin']),
+  contentController.deleteContent
 );
 
 export default router;
