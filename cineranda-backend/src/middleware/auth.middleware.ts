@@ -48,3 +48,30 @@ export const restrictToAdmin = (req: AuthRequest, res: Response, next: NextFunct
   
   next();
 };
+
+/**
+ * Middleware to authorize users based on roles.
+ * @param allowedRoles - Array of roles that are allowed to access the route.
+ */
+export const authorize = (allowedRoles: string[]) => {
+  // FIX: Change the type of 'req' from 'Request' to 'AuthRequest'
+  return (req: AuthRequest, res: Response, next: NextFunction) => {
+    // This check relies on the 'authenticate' middleware running first
+    if (!req.user || !req.user.role) {
+      return next(
+        new AppError('Authentication error. User data is missing.', 401)
+      );
+    }
+
+    const isAllowed = allowedRoles.includes(req.user.role);
+
+    if (!isAllowed) {
+      return next(
+        new AppError('You do not have permission to perform this action.', 403)
+      );
+    }
+
+    // If the user's role is in the allowed list, proceed.
+    next();
+  };
+};

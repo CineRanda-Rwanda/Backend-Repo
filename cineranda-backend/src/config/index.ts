@@ -1,8 +1,24 @@
 import dotenv from 'dotenv';
 import path from 'path';
+import { ConnectOptions } from 'mongoose';
 
 // Load environment variables
 dotenv.config({ path: path.join(__dirname, '../../.env') });
+
+// --- Define interfaces for type safety ---
+interface JwtConfig {
+  secret: string;
+  expiration: string;
+  refreshSecret: string;
+  refreshExpiration: string;
+}
+
+interface AwsConfig {
+  accessKeyId: string;
+  secretAccessKey: string;
+  region: string;
+  s3Bucket: string;
+}
 
 const config = {
   env: process.env.NODE_ENV || 'development',
@@ -13,20 +29,23 @@ const config = {
     uri: process.env.MONGODB_URI || 'mongodb://localhost:27017/cineranda-dev'
   },
   
+  // --- THIS IS THE CORRECTED JWT OBJECT ---
   jwt: {
-    secret: process.env.JWT_SECRET || 'your_jwt_secret',
-    refreshSecret: process.env.JWT_REFRESH_SECRET || 'your_refresh_secret',
-    expiration: process.env.JWT_EXPIRE || '15m',
-    refreshExpiration: process.env.JWT_REFRESH_EXPIRE || '7d'
-  },
+    secret: process.env.JWT_SECRET!,
+    expiration: process.env.JWT_EXPIRATION!,
+    refreshSecret: process.env.JWT_REFRESH_SECRET!,
+    refreshExpiration: process.env.JWT_REFRESH_EXPIRATION!,
+  } as JwtConfig,
   
+  // This is the AWS configuration object (already correct)
   aws: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-    region: process.env.AWS_REGION || 'us-east-1',
-    s3Bucket: process.env.AWS_S3_BUCKET || 'cineranda-dev'
-  },
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+    region: process.env.AWS_REGION!,
+    s3Bucket: process.env.AWS_S3_BUCKET!,
+  } as AwsConfig,
   
+  // --- ALL YOUR OTHER CONFIGURATIONS ARE PRESERVED ---
   payment: {
     stripe: {
       secretKey: process.env.STRIPE_SECRET_KEY
@@ -48,7 +67,6 @@ const config = {
     password: process.env.ADMIN_PASSWORD || 'SecurePassword123!'
   },
   
-  // Regional pricing configuration
   regions: {
     rwanda: {
       code: 'rw',
