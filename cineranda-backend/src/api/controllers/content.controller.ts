@@ -166,4 +166,60 @@ export class ContentController {
       next(error);
     }
   };
+
+  /**
+   * Get a paginated list of all content for the admin dashboard.
+   */
+  getAllContent = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      // Basic Pagination
+      const page = parseInt(req.query.page as string, 10) || 1;
+      const limit = parseInt(req.query.limit as string, 10) || 10;
+      const skip = (page - 1) * limit;
+
+      const content = await Content.find()
+        .sort({ createdAt: -1 }) // Show newest first
+        .skip(skip)
+        .limit(limit);
+      
+      const totalContent = await Content.countDocuments();
+
+      res.status(200).json({
+        status: 'success',
+        results: content.length,
+        pagination: {
+          currentPage: page,
+          totalPages: Math.ceil(totalContent / limit),
+          totalContent,
+        },
+        data: {
+          content,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  /**
+   * Get a single piece of content by its ID.
+   */
+  getContent = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const content = await Content.findById(req.params.id);
+
+      if (!content) {
+        return next(new AppError('No content found with that ID', 404));
+      }
+
+      res.status(200).json({
+        status: 'success',
+        data: {
+          content,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
 }

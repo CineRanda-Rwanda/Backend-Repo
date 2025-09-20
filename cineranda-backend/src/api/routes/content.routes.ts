@@ -6,6 +6,22 @@ import { upload } from '../../middleware/upload.middleware';
 const router = Router();
 const contentController = new ContentController();
 
+// GET /api/v1/content - Get all content (Admin only)
+router.get(
+  '/',
+  authenticate,
+  authorize(['admin']),
+  contentController.getAllContent
+);
+
+// GET /api/v1/content/:id - Get a single piece of content (Admin only)
+router.get(
+  '/:id',
+  authenticate,
+  authorize(['admin']),
+  contentController.getContent
+);
+
 // Define the fields for multer to expect. This is crucial.
 const contentUpload = upload.fields([
   { name: 'posterImage', maxCount: 1 },
