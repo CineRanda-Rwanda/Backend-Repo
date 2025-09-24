@@ -11,66 +11,116 @@ export class ContentController {
   }
 
   createContent = async (req: Request, res: Response, next: NextFunction) => {
-    console.log('--- [DEBUG] ENTERED createContent CONTROLLER ---');
     try {
-      const files = req.files as { [fieldname:string]: Express.Multer.File[] };
-
-      console.log('--- [DEBUG] Step 1: Validating files... ---');
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] } || {};
+      
+      // Check if title is provided
+      if (!req.body.title) {
+        return next(new AppError('Title is required.', 400));
+      }
+      
+      // Validate content type
+      const contentType = req.body.contentType;
+      if (contentType !== 'Movie' && contentType !== 'Series') {
+        return next(new AppError('Content type must be either "Movie" or "Series".', 400));
+      }
+      
+      // Poster image is required for both types
       if (!files.posterImage || !files.posterImage[0]) {
         return next(new AppError('Poster image is required.', 400));
       }
-      if (req.body.contentType === 'Movie' && (!files.movieFile || !files.movieFile[0])) {
-        return next(new AppError('Movie file is required for content type "Movie".', 400));
-      }
-
-      console.log('--- [DEBUG] Step 2: Uploading poster to S3... ---');
-      const posterImageUrl = await this.s3Service.uploadFile(files.posterImage[0], 'posters');
-      console.log('--- [DEBUG] Step 3: Poster uploaded successfully. ---');
       
-      let movieFileUrl: string | undefined;
-      if (req.body.contentType === 'Movie') {
-        console.log('--- [DEBUG] Step 4: Uploading movie file to S3... ---');
-        movieFileUrl = await this.s3Service.uploadFile(files.movieFile[0], 'movies');
-        console.log('--- [DEBUG] Step 5: Movie file uploaded successfully. ---');
+      // THIS IS THE KEY CHANGE: Only require movie file for 'Movie' content type
+      if (contentType === 'Movie') {
+        if (!files.movieFile || !files.movieFile[0]) {
+          return next(new AppError('Movie file is required for content type "Movie".', 400));
+        }
       }
-
-      console.log('--- [DEBUG] Step 6: Uploading subtitles (if any)... ---');
-      const subtitles: { en?: string; fr?: string; kin?: string; } = {};
-      if (files.subtitleEn?.[0]) {
-        subtitles.en = await this.s3Service.uploadFile(files.subtitleEn[0], 'subtitles');
-      }
-      if (files.subtitleFr?.[0]) {
-        subtitles.fr = await this.s3Service.uploadFile(files.subtitleFr[0], 'subtitles');
-      }
-      if (files.subtitleKin?.[0]) {
-        subtitles.kin = await this.s3Service.uploadFile(files.subtitleKin[0], 'subtitles');
-      }
-      console.log('--- [DEBUG] Step 7: Subtitles processed. ---');
-
-      console.log('--- [DEBUG] Step 8: Creating document in MongoDB... ---');
-      const newContent = await Content.create({
-        ...req.body,
-        priceInRwf: Number(req.body.priceInRwf),
-        priceInCoins: Number(req.body.priceInCoins),
-        duration: Number(req.body.duration),
+      
+      // Upload poster image
+      const posterImageUrl = await this.s3Service.uploadFile(
+        files.posterImage[0],
+        'posters'
+      );
+      
+      // Create content object
+      const content: any = {
+        title: req.body.title,
+        description: req.body.description,
+        contentType,
         posterImageUrl,
-        movieFileUrl,
-        subtitles: Object.keys(subtitles).length > 0 ? subtitles : undefined,
-      });
-      console.log('--- [DEBUG] Step 9: MongoDB document created. ---');
-
+        isPublished: req.body.isPublished === 'true',
+        trailerYoutubeLink: req.body.trailerYoutubeLink,
+      };
+      
+      // Add pricing if provided
+      if (req.body.priceInRwf) {
+        content.priceInRwf = parseInt(req.body.priceInRwf, 10);
+      }
+      if (req.body.priceInCoins) {
+        content.priceInCoins = parseInt(req.body.priceInCoins, 10);
+      }
+      
+      // Content type specific processing
+      if (contentType === 'Movie') {
+        // Movie specific - add movie file and subtitles
+        const movieFileUrl = await this.s3Service.uploadFile(
+          files.movieFile[0],
+          'movies'
+        );
+        content.movieFileUrl = movieFileUrl;
+        
+        // Add subtitles if provided
+        const subtitles: { en?: string; fr?: string; kin?: string } = {};
+        
+        if (files.subtitleEn?.[0]) {
+          subtitles.en = await this.s3Service.uploadFile(files.subtitleEn[0], 'subtitles');
+        }
+        if (files.subtitleFr?.[0]) {
+          subtitles.fr = await this.s3Service.uploadFile(files.subtitleFr[0], 'subtitles');
+        }
+        if (files.subtitleKin?.[0]) {
+          subtitles.kin = await this.s3Service.uploadFile(files.subtitleKin[0], 'subtitles');
+        }
+        
+        if (Object.keys(subtitles).length > 0) {
+          content.subtitles = subtitles;
+        }
+        
+        if (req.body.duration) {
+          content.duration = parseInt(req.body.duration, 10);
+        }
+      } else {
+        // Series specific - handle seasons
+        try {
+          if (req.body.seasons) {
+            const seasons = typeof req.body.seasons === 'string'
+              ? JSON.parse(req.body.seasons)
+              : req.body.seasons;
+              
+            if (Array.isArray(seasons)) {
+              content.seasons = seasons;
+            } else {
+              content.seasons = [];
+            }
+          } else {
+            content.seasons = [];
+          }
+        } catch (e) {
+          content.seasons = [];
+        }
+      }
+      
+      // Save content
+      const newContent = await Content.create(content);
+      
       res.status(201).json({
         status: 'success',
-        message: 'Content created successfully.',
         data: {
           content: newContent,
         },
       });
-      
-      console.log('--- [DEBUG] REQUEST FINISHED SUCCESSFULLY ---');
-
     } catch (error) {
-      console.error('--- [DEBUG] ERROR IN CREATE CONTENT ---', error);
       next(error);
     }
   };
@@ -217,6 +267,269 @@ export class ContentController {
         data: {
           content,
         },
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  addEpisode = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { contentId, seasonId } = req.params;
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+
+      // 1. Find the series content
+      const series = await Content.findById(contentId);
+      if (!series) {
+        return next(new AppError('No content found with that ID', 404));
+      }
+      if (series.contentType !== 'Series') {
+        return next(new AppError('Content must be a Series to add episodes', 400));
+      }
+
+      // 2. Make sure seasons exist
+      if (!series.seasons || !Array.isArray(series.seasons)) {
+        return next(new AppError('Series has no seasons array defined', 400));
+      }
+
+      // 3. Find the season
+      const seasonIndex = series.seasons.findIndex(
+        (season: any) => season._id.toString() === seasonId
+      );
+      if (seasonIndex === -1) {
+        return next(new AppError('No season found with that ID', 404));
+      }
+
+      // 4. Validate required episode video
+      if (!files.episodeVideo?.[0]) {
+        return next(new AppError('Episode video is required', 400));
+      }
+
+      // 5. Upload episode video to S3
+      const videoUrl = await this.s3Service.uploadFile(
+        files.episodeVideo[0],
+        'episodes'
+      );
+
+      // 6. Upload subtitle files if provided
+      const subtitles: { en?: string; fr?: string; kin?: string } = {};
+      if (files.subtitleEn?.[0]) {
+        subtitles.en = await this.s3Service.uploadFile(files.subtitleEn[0], 'subtitles');
+      }
+      if (files.subtitleFr?.[0]) {
+        subtitles.fr = await this.s3Service.uploadFile(files.subtitleFr[0], 'subtitles');
+      }
+      if (files.subtitleKin?.[0]) {
+        subtitles.kin = await this.s3Service.uploadFile(files.subtitleKin[0], 'subtitles');
+      }
+
+      // 7. Create new episode object
+      const newEpisode = {
+        episodeNumber: parseInt(req.body.episodeNumber, 10),
+        title: req.body.title,
+        description: req.body.description,
+        videoUrl,
+        trailerYoutubeLink: req.body.trailerYoutubeLink,
+        priceInRwf: req.body.priceInRwf ? parseInt(req.body.priceInRwf, 10) : undefined,
+        priceInCoins: req.body.priceInCoins ? parseInt(req.body.priceInCoins, 10) : undefined,
+        duration: req.body.duration ? parseInt(req.body.duration, 10) : undefined,
+        isFree: req.body.isFree === 'true',
+        subtitles: Object.keys(subtitles).length > 0 ? subtitles : undefined,
+      };
+
+      // 8. Add to season and save
+      series.seasons[seasonIndex].episodes.push(newEpisode as any);
+      await series.save();
+
+      // 9. Get the newly created episode
+      const createdEpisode = series.seasons[seasonIndex].episodes.slice(-1)[0];
+
+      res.status(201).json({
+        status: 'success',
+        data: {
+          episode: createdEpisode,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  /**
+   * Updates an existing episode within a season
+   */
+  updateEpisode = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { contentId, seasonId, episodeId } = req.params;
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+
+      // 1. Find the series content
+      const series = await Content.findById(contentId);
+      if (!series) {
+        return next(new AppError('No content found with that ID', 404));
+      }
+      if (series.contentType !== 'Series') {
+        return next(new AppError('Content must be a Series to update episodes', 400));
+      }
+
+      // 2. Make sure seasons exist
+      if (!series.seasons || !Array.isArray(series.seasons)) {
+        return next(new AppError('Series has no seasons array defined', 400));
+      }
+
+      // 3. Find the season
+      const seasonIndex = series.seasons.findIndex(
+        (season: any) => season._id.toString() === seasonId
+      );
+      if (seasonIndex === -1) {
+        return next(new AppError('No season found with that ID', 404));
+      }
+
+      // 4. Find the episode
+      const episodeIndex = series.seasons[seasonIndex].episodes.findIndex(
+        (episode: any) => episode._id.toString() === episodeId
+      );
+      if (episodeIndex === -1) {
+        return next(new AppError('No episode found with that ID', 404));
+      }
+
+      // 5. Get the current episode
+      const currentEpisode = series.seasons[seasonIndex].episodes[episodeIndex];
+      
+      // 6. Prepare updates object from request body
+      const updates: any = { ...req.body };
+      
+      // Convert numeric fields
+      if (updates.episodeNumber) updates.episodeNumber = parseInt(updates.episodeNumber, 10);
+      if (updates.duration) updates.duration = parseInt(updates.duration, 10);
+      if (updates.priceInRwf) updates.priceInRwf = parseInt(updates.priceInRwf, 10);
+      if (updates.priceInCoins) updates.priceInCoins = parseInt(updates.priceInCoins, 10);
+      if (updates.isFree !== undefined) updates.isFree = updates.isFree === 'true';
+      
+      // 7. Handle video replacement if provided
+      if (files.episodeVideo?.[0]) {
+        // Delete old video if it exists
+        if (currentEpisode.videoUrl) {
+          await this.s3Service.deleteFile(currentEpisode.videoUrl);
+        }
+        // Upload new video
+        updates.videoUrl = await this.s3Service.uploadFile(
+          files.episodeVideo[0],
+          'episodes'
+        );
+      }
+      
+      // 8. Handle subtitle replacements if provided
+      const subtitleUpdates: { en?: string; fr?: string; kin?: string } = { ...currentEpisode.subtitles };
+      
+      if (files.subtitleEn?.[0]) {
+        if (subtitleUpdates.en) {
+          await this.s3Service.deleteFile(subtitleUpdates.en);
+        }
+        subtitleUpdates.en = await this.s3Service.uploadFile(files.subtitleEn[0], 'subtitles');
+      }
+      
+      if (files.subtitleFr?.[0]) {
+        if (subtitleUpdates.fr) {
+          await this.s3Service.deleteFile(subtitleUpdates.fr);
+        }
+        subtitleUpdates.fr = await this.s3Service.uploadFile(files.subtitleFr[0], 'subtitles');
+      }
+      
+      if (files.subtitleKin?.[0]) {
+        if (subtitleUpdates.kin) {
+          await this.s3Service.deleteFile(subtitleUpdates.kin);
+        }
+        subtitleUpdates.kin = await this.s3Service.uploadFile(files.subtitleKin[0], 'subtitles');
+      }
+      
+      // Only update subtitles if any were uploaded
+      if (files.subtitleEn?.[0] || files.subtitleFr?.[0] || files.subtitleKin?.[0]) {
+        updates.subtitles = subtitleUpdates;
+      }
+      
+      // 9. Update the episode
+      Object.assign(series.seasons[seasonIndex].episodes[episodeIndex], updates);
+      await series.save();
+      
+      res.status(200).json({
+        status: 'success',
+        data: {
+          episode: series.seasons[seasonIndex].episodes[episodeIndex]
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  /**
+   * Deletes an episode from a season
+   */
+  deleteEpisode = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { contentId, seasonId, episodeId } = req.params;
+
+      // 1. Find the series content
+      const series = await Content.findById(contentId);
+      if (!series) {
+        return next(new AppError('No content found with that ID', 404));
+      }
+      if (series.contentType !== 'Series') {
+        return next(new AppError('Content must be a Series to delete episodes', 400));
+      }
+
+      // 2. Make sure seasons exist
+      if (!series.seasons || !Array.isArray(series.seasons)) {
+        return next(new AppError('Series has no seasons array defined', 400));
+      }
+
+      // 3. Find the season
+      const seasonIndex = series.seasons.findIndex(
+        (season: any) => season._id.toString() === seasonId
+      );
+      if (seasonIndex === -1) {
+        return next(new AppError('No season found with that ID', 404));
+      }
+
+      // 4. Find the episode
+      const episodeIndex = series.seasons[seasonIndex].episodes.findIndex(
+        (episode: any) => episode._id.toString() === episodeId
+      );
+      if (episodeIndex === -1) {
+        return next(new AppError('No episode found with that ID', 404));
+      }
+
+      // 5. Get the episode to delete
+      const episodeToDelete = series.seasons[seasonIndex].episodes[episodeIndex];
+
+      // 6. Delete video and subtitle files from S3
+      if (episodeToDelete.videoUrl) {
+        await this.s3Service.deleteFile(episodeToDelete.videoUrl);
+      }
+      
+      if (episodeToDelete.subtitles) {
+        if (episodeToDelete.subtitles.en) {
+          await this.s3Service.deleteFile(episodeToDelete.subtitles.en);
+        }
+        if (episodeToDelete.subtitles.fr) {
+          await this.s3Service.deleteFile(episodeToDelete.subtitles.fr);
+        }
+        if (episodeToDelete.subtitles.kin) {
+          await this.s3Service.deleteFile(episodeToDelete.subtitles.kin);
+        }
+      }
+
+      // 7. Remove the episode from the array
+      series.seasons[seasonIndex].episodes.splice(episodeIndex, 1);
+      
+      // 8. Save the updated series
+      await series.save();
+
+      // 8. Return 204 No Content
+      res.status(204).json({
+        status: 'success',
+        data: null
       });
     } catch (error) {
       next(error);

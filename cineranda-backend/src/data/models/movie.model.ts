@@ -2,20 +2,23 @@ import mongoose, { Schema, Document, model } from 'mongoose';
 
 // --- SUB-SCHEMAS ---
 const SubtitleSchema = new Schema({
-  en: { type: String }, // URL to English subtitle file
-  fr: { type: String }, // URL to French subtitle file
-  kin: { type: String }, // URL to Kinyarwanda subtitle file
-}, { _id: false });
+  en: { type: String },
+  fr: { type: String },
+  kin: { type: String },
+});
 
 const EpisodeSchema = new Schema({
   episodeNumber: { type: Number, required: true },
   title: { type: String, required: true },
   description: { type: String },
   videoUrl: { type: String, required: true },
+  trailerYoutubeLink: { type: String }, // Episode-specific trailer
+  priceInRwf: { type: Number }, // Episode-specific price
+  priceInCoins: { type: Number }, // Episode-specific price in coins
   duration: { type: Number }, // in minutes
   isFree: { type: Boolean, default: false },
   subtitles: SubtitleSchema,
-});
+}, { timestamps: true });
 
 const SeasonSchema = new Schema({
   seasonNumber: { type: Number, required: true },

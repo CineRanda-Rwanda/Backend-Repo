@@ -29,6 +29,8 @@ const contentUpload = upload.fields([
   { name: 'subtitleEn', maxCount: 1 },
   { name: 'subtitleFr', maxCount: 1 },
   { name: 'subtitleKin', maxCount: 1 },
+  // Add these for episode management
+  { name: 'episodeVideo', maxCount: 1 },
 ]);
 
 // POST /api/v1/content - Create new content (Admin only)
@@ -55,6 +57,33 @@ router.delete(
   authenticate,
   authorize(['admin']),
   contentController.deleteContent
+);
+
+// Episode Management Routes
+// POST /api/v1/content/:contentId/seasons/:seasonId/episodes - Add an episode to a season
+router.post(
+  '/:contentId/seasons/:seasonId/episodes',
+  authenticate,
+  authorize(['admin']),
+  contentUpload,
+  contentController.addEpisode
+);
+
+// PATCH /api/v1/content/:contentId/seasons/:seasonId/episodes/:episodeId - Update an episode
+router.patch(
+  '/:contentId/seasons/:seasonId/episodes/:episodeId',
+  authenticate,
+  authorize(['admin']),
+  contentUpload,
+  contentController.updateEpisode
+);
+
+// DELETE /api/v1/content/:contentId/seasons/:seasonId/episodes/:episodeId - Delete an episode
+router.delete(
+  '/:contentId/seasons/:seasonId/episodes/:episodeId',
+  authenticate,
+  authorize(['admin']),
+  contentController.deleteEpisode
 );
 
 export default router;
