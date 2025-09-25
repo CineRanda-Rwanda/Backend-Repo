@@ -275,12 +275,18 @@ export class ContentController {
 
   addEpisode = async (req: Request, res: Response, next: NextFunction) => {
     try {
+      console.log('⭐ ADD EPISODE - START ⭐');
       const { contentId, seasonId } = req.params;
-      const files = req.files as { [fieldname: string]: Express.Multer.File[] };
-
+      console.log(`Content ID: ${contentId}, Season ID: ${seasonId}`);
+      
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] } || {};
+      console.log('Files received:', Object.keys(files));
+      
       // 1. Find the series content
+      console.log('Finding content...');
       const series = await Content.findById(contentId);
       if (!series) {
+        console.log('No content found with that ID');
         return next(new AppError('No content found with that ID', 404));
       }
       if (series.contentType !== 'Series') {
