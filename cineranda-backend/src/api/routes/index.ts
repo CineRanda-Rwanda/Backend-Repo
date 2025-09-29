@@ -2,6 +2,8 @@ import { Router } from 'express';
 import authRoutes from './auth.routes';
 import adminRoutes from './admin.routes';
 import contentRouter from './content.routes'; // 1. Import the new content router
+import userRoutes from './user.routes';
+import settingsRoutes from './settings.routes';
 
 const router = Router();
 
@@ -13,5 +15,7 @@ router.use('/admin', adminRoutes);
 
 // 2. Add the new content routes
 router.use('/content', contentRouter);
+router.use('/api/v1/users', userRoutes);
+router.use('/api/v1/settings', settingsRoutes);
 
 export default router;

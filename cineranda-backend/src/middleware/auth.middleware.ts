@@ -4,6 +4,13 @@ import { User, IUser } from '../data/models/user.model';
 import AppError from '../utils/AppError';
 import config from '../config'; // Use the config file for secrets
 
+// Improved JWT payload interface for better type safety
+interface JwtPayload {
+  userId: string;
+  iat?: number;
+  exp?: number;
+}
+
 // This interface will be used by all authenticated routes
 interface AuthRequest extends Request {
   user?: IUser; // Use the IUser interface
@@ -20,9 +27,8 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
       return next(new AppError('You are not logged in. Please log in to get access.', 401));
     }
 
-    // --- THIS IS THE FIX ---
-    // The token payload contains 'userId', not 'id'. We need to look for the correct property.
-    const decoded = jwt.verify(token, config.jwt.secret) as { userId: string };
+    // Type-safe token verification
+    const decoded = jwt.verify(token, config.jwt.secret) as JwtPayload;
 
     // Use the correct property from the decoded token
     const currentUser = await User.findById(decoded.userId);
@@ -31,10 +37,23 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
       return next(new AppError('The user belonging to this token no longer exists.', 401));
     }
 
+    // Safe check for isActive property (handles undefined)
+    if (currentUser.isActive === false) {
+      return next(new AppError('Your account has been deactivated', 403));
+    }
+
+    // Add user to request object
     req.user = currentUser;
     next();
   } catch (error) {
-    return next(new AppError('Invalid token. Please log in again.', 401));
+    // Handle specific JWT errors with clear messages
+    if (error instanceof jwt.JsonWebTokenError) {
+      return next(new AppError('Invalid token. Please log in again.', 401));
+    }
+    if (error instanceof jwt.TokenExpiredError) {
+      return next(new AppError('Your token has expired. Please log in again.', 401));
+    }
+    next(error);
   }
 };
 
@@ -54,7 +73,6 @@ export const restrictToAdmin = (req: AuthRequest, res: Response, next: NextFunct
  * @param allowedRoles - Array of roles that are allowed to access the route.
  */
 export const authorize = (allowedRoles: string[]) => {
-  // FIX: Change the type of 'req' from 'Request' to 'AuthRequest'
   return (req: AuthRequest, res: Response, next: NextFunction) => {
     // This check relies on the 'authenticate' middleware running first
     if (!req.user || !req.user.role) {

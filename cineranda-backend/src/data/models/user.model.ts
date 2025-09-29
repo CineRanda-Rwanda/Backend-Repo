@@ -1,6 +1,20 @@
 import mongoose, { Schema, Document, model } from 'mongoose';
 import bcrypt from 'bcryptjs';
 
+// Define transaction interface
+interface Transaction {
+  amount: number;
+  type: 'welcome-bonus' | 'admin-adjustment' | 'purchase' | 'refund';
+  description?: string;
+  createdAt: Date;
+}
+
+// Define coin wallet interface
+interface CoinWallet {
+  balance: number;
+  transactions: Transaction[];
+}
+
 // User interface
 export interface IUser extends Document {
   username: string;
@@ -12,7 +26,7 @@ export interface IUser extends Document {
   lastName?: string;
   role: string;
   location?: string;
-  isActive: boolean;
+  isActive?: boolean;
   isEmailVerified?: boolean;
   emailVerificationToken?: string;
   passwordResetToken?: string;
@@ -36,11 +50,7 @@ export interface IUser extends Document {
   }>;
   preferredLanguage?: 'kinyarwanda' | 'english' | 'french';
   theme?: 'light' | 'dark';
-  coinWallet?: {
-    balance: number;
-    totalEarned: number;
-    totalSpent: number;
-  };
+  coinWallet?: CoinWallet;
   isTwoFactorEnabled?: boolean; // Added for 2FA
   twoFactorSecret?: string;   // Added for 2FA
   comparePassword(candidatePassword: string): Promise<boolean>;
@@ -139,8 +149,18 @@ const userSchema = new Schema<IUser>(
     coinWallet: {
       type: {
         balance: { type: Number, default: 0 },
-        totalEarned: { type: Number, default: 0 },
-        totalSpent: { type: Number, default: 0 },
+        transactions: [
+          {
+            amount: { type: Number, required: true },
+            type: {
+              type: String,
+              enum: ['welcome-bonus', 'admin-adjustment', 'purchase', 'refund'],
+              required: true,
+            },
+            description: { type: String },
+            createdAt: { type: Date, default: Date.now },
+          },
+        ],
       },
       default: {},
     },
@@ -212,6 +232,27 @@ userSchema.methods.comparePin = async function (
 ): Promise<boolean> {
   if (!this.pin) return false;
   return bcrypt.compare(candidatePin, this.pin);
+};
+
+// Add a method to add coins to wallet
+userSchema.methods.addCoins = async function (
+  amount: number,
+  type: string,
+  description: string = ''
+) {
+  if (!this.coinWallet) {
+    this.coinWallet = { balance: 0, transactions: [] };
+  }
+
+  this.coinWallet.balance += amount;
+  this.coinWallet.transactions.push({
+    amount,
+    type,
+    description,
+    createdAt: new Date(),
+  });
+
+  return this.save();
 };
 
 // Create the model

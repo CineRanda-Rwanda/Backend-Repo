@@ -1,12 +1,32 @@
 import { Request, Response, NextFunction } from 'express';
 import { AuthService } from '../../core/services/auth.service';
 import AppError from '../../utils/AppError';
-import { IUser } from '../../data/models/user.model'; // Import the IUser interface
+import { User, IUser } from '../../data/models/user.model';
+import { Settings } from '../../data/models/settings.model';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { SignOptions, Secret } from 'jsonwebtoken'; // Add Secret type
+import mongoose, { Document } from 'mongoose';
 
 // Define an interface for requests that have been authenticated
 interface AuthRequest extends Request {
-  user?: IUser; // The user property is now typed correctly
+  user?: IUser; 
 }
+
+// Define AuthenticatedUser type to handle mongoose document properly
+type AuthenticatedUser = Document & IUser & { _id: mongoose.Types.ObjectId };
+
+// Helper function for creating tokens - FIXED VERSION
+const signToken = (id: string) => {
+  const secret = process.env.JWT_SECRET || 'your-fallback-secret';
+  // Create a properly typed options object
+  const options = {
+    expiresIn: process.env.JWT_EXPIRES_IN || '90d'
+  };
+  
+  // Cast both the secret and options to the right types
+  return jwt.sign({ id }, secret as Secret, options as jwt.SignOptions);
+};
 
 export class AuthController {
   private authService: AuthService;
@@ -22,15 +42,69 @@ export class AuthController {
       if (!username || !phoneNumber || !pin) {
         return next(new AppError('Username, phone number and PIN are required', 400));
       }
+
+      // Hash the PIN before saving
+      const hashedPin = await bcrypt.hash(pin, 12);
       
-      // We'll update the AuthService later
-      const result = await this.authService.register({ 
-        username, 
-        phoneNumber, 
-        pin 
+      // Create new user
+      const newUser = await User.create({
+        username,
+        phoneNumber,
+        pin: hashedPin,
+        // Use role instead of roles to match your model
+        role: 'user',
+        // Initialize coinWallet
+        coinWallet: { balance: 0, transactions: [] }
       });
       
-      res.status(201).json({ status: 'success', ...result });
+      // Apply welcome bonus if configured
+      try {
+        const settings = await Settings.findOne();
+        if (settings && settings.welcomeBonusAmount > 0) {
+          // Initialize coinWallet if not exists
+          if (!newUser.coinWallet) {
+            newUser.coinWallet = {
+              balance: 0,
+              transactions: []
+            };
+          }
+          
+          // Add welcome bonus coins
+          newUser.coinWallet.balance += settings.welcomeBonusAmount;
+          newUser.coinWallet.transactions.push({
+            amount: settings.welcomeBonusAmount,
+            type: 'welcome-bonus',
+            description: 'Welcome to Cineranda!',
+            createdAt: new Date()
+          });
+          
+          await newUser.save();
+        }
+      } catch (error) {
+        console.error('Error applying welcome bonus:', error);
+        // Continue even if bonus fails
+      }
+      
+      // Generate token with proper type handling
+      // Fix the _id type issue by using proper casting
+      const token = signToken((newUser._id as any).toString());
+      
+      // Return response with user info (using role instead of roles)
+      res.status(201).json({
+        status: 'success',
+        token,
+        data: {
+          user: {
+            _id: newUser._id,
+            username: newUser.username,
+            phoneNumber: newUser.phoneNumber,
+            role: newUser.role,
+            coinWallet: {
+              balance: newUser.coinWallet?.balance || 0
+            }
+          }
+        }
+      });
     } catch (error) {
       next(error);
     }
