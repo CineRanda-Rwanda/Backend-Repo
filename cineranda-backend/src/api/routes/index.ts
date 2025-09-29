@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import authRoutes from './auth.routes';
 import adminRoutes from './admin.routes';
-import contentRouter from './content.routes'; // 1. Import the new content router
+import contentRouter from './content.routes';
 import userRoutes from './user.routes';
 import settingsRoutes from './settings.routes';
+import verificationRoutes from './verification.routes';
 
 const router = Router();
 
@@ -13,9 +14,13 @@ router.use('/auth', authRoutes);
 // Keep your existing admin routes
 router.use('/admin', adminRoutes);
 
-// 2. Add the new content routes
+// Add the new content routes
 router.use('/content', contentRouter);
-router.use('/api/v1/users', userRoutes);
-router.use('/api/v1/settings', settingsRoutes);
+
+// These routes have /api/v1 prefix, which is inconsistent
+// Let's fix them to match the pattern above
+router.use('/users', userRoutes);
+router.use('/settings', settingsRoutes);
+router.use('/verification', verificationRoutes); // Fixed this path
 
 export default router;

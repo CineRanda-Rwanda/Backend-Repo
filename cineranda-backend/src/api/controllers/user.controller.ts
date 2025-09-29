@@ -1,7 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
-import { User } from '../../data/models/user.model';
+import { User, IUser } from '../../data/models/user.model';
 import AppError from '../../utils/AppError';
 import bcrypt from 'bcryptjs';
+import mongoose from 'mongoose';
+
+// Define AuthRequest interface
+interface AuthRequest extends Request {
+  user: IUser & { _id: mongoose.Types.ObjectId | string };
+}
 
 export class UserController {
   // Get all users with pagination and filtering
@@ -61,6 +67,32 @@ export class UserController {
       
       if (!user) {
         return next(new AppError('User not found', 404));
+      }
+      
+      res.status(200).json({
+        status: 'success',
+        data: {
+          user
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // Get user by phone number
+  getUserByPhone = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { phoneNumber } = req.query;
+      
+      if (!phoneNumber || typeof phoneNumber !== 'string') {
+        return next(new AppError('Valid phone number is required', 400));
+      }
+      
+      const user = await User.findOne({ phoneNumber }).select('-pin');
+      
+      if (!user) {
+        return next(new AppError('No user found with that phone number', 404));
       }
       
       res.status(200).json({
@@ -239,6 +271,31 @@ export class UserController {
           balance: user.coinWallet?.balance || 0,
           transactions: user.coinWallet?.transactions || []
         }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // Delete user
+  deleteUser = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+      
+      // Prevent deleting yourself
+      if (id === (req as AuthRequest).user._id.toString()) {
+        return next(new AppError('You cannot delete your own account through this endpoint', 403));
+      }
+      
+      const user = await User.findByIdAndDelete(id);
+      
+      if (!user) {
+        return next(new AppError('No user found with that ID', 404));
+      }
+      
+      res.status(204).json({
+        status: 'success',
+        data: null
       });
     } catch (error) {
       next(error);

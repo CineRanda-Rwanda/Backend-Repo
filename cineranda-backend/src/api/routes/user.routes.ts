@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { UserController } from '../controllers/user.controller';
-import { authenticate } from '../../middleware/auth.middleware';
-import { authorize } from '../../middleware/auth.middleware';
+import { authenticate, authorize } from '../../middleware/auth.middleware';
 
 const router = Router();
 const userController = new UserController();
@@ -9,6 +8,9 @@ const userController = new UserController();
 // Protect all routes
 router.use(authenticate);
 router.use(authorize(['admin']));
+
+// GET /api/v1/users/by-phone - Find user by phone number
+router.get('/by-phone', userController.getUserByPhone);
 
 // GET /api/v1/users - Get all users
 router.get('/', userController.getAllUsers);
@@ -30,5 +32,8 @@ router.post('/:id/coins', userController.adjustCoins);
 
 // GET /api/v1/users/:id/transactions - Get user's transactions
 router.get('/:id/transactions', userController.getUserTransactions);
+
+// DELETE /api/v1/users/:id - Delete a user
+router.delete('/:id', userController.deleteUser);
 
 export default router;

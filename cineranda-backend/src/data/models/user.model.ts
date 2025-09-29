@@ -53,6 +53,9 @@ export interface IUser extends Document {
   coinWallet?: CoinWallet;
   isTwoFactorEnabled?: boolean; // Added for 2FA
   twoFactorSecret?: string;   // Added for 2FA
+  verificationCode?: string; // Added for phone number verification
+  verificationCodeExpires?: Date; // Added for phone number verification
+  phoneVerified?: boolean; // Added for phone number verification
   comparePassword(candidatePassword: string): Promise<boolean>;
   comparePin(candidatePin: string): Promise<boolean>;
 }
@@ -188,6 +191,19 @@ const userSchema = new Schema<IUser>(
     twoFactorSecret: {
       type: String,
       select: false,
+    },
+    // --- ADDED PHONE VERIFICATION FIELDS TO SCHEMA ---
+    verificationCode: {
+      type: String,
+      select: false,
+    },
+    verificationCodeExpires: {
+      type: Date,
+      select: false,
+    },
+    phoneVerified: {
+      type: Boolean,
+      default: false,
     },
   },
   {
