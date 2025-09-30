@@ -83,15 +83,28 @@ export class UserController {
   // Get user by phone number
   getUserByPhone = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { phoneNumber } = req.query;
+      let { phoneNumber } = req.query;
       
       if (!phoneNumber || typeof phoneNumber !== 'string') {
         return next(new AppError('Valid phone number is required', 400));
       }
       
+      // Normalize phone number format (ensure it has + prefix)
+      if (!phoneNumber.startsWith('+')) {
+        phoneNumber = `+${phoneNumber}`;
+      }
+      
+      // Log for debugging
+      console.log(`Searching for user with phone number: ${phoneNumber}`);
+      
+      // Try to find the user
       const user = await User.findOne({ phoneNumber }).select('-pin');
       
       if (!user) {
+        // For debugging, check how many users exist
+        const userCount = await User.countDocuments();
+        console.log(`No user found with phone ${phoneNumber}. Total users: ${userCount}`);
+        
         return next(new AppError('No user found with that phone number', 404));
       }
       
@@ -102,6 +115,7 @@ export class UserController {
         }
       });
     } catch (error) {
+      console.error('Error in getUserByPhone:', error);
       next(error);
     }
   };

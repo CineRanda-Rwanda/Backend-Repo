@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { AuthService } from '../../core/services/auth.service';
+import { VerificationService } from '../../core/services/verification.service';
 import AppError from '../../utils/AppError';
 import { User, IUser } from '../../data/models/user.model';
 import { Settings } from '../../data/models/settings.model';
@@ -30,11 +31,13 @@ const signToken = (id: string) => {
 
 export class AuthController {
   private authService: AuthService;
-
+  private verificationService: VerificationService;
+  
   constructor() {
     this.authService = new AuthService();
+    this.verificationService = new VerificationService();
   }
-
+  
   register = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { username, phoneNumber, pin } = req.body;
@@ -43,33 +46,45 @@ export class AuthController {
         return next(new AppError('Username, phone number and PIN are required', 400));
       }
 
-      // Check if user with this phone number already exists
+      // Check if user exists and is already verified
       const existingUser = await User.findOne({ phoneNumber });
-      if (existingUser) {
+      
+      if (existingUser && existingUser.phoneVerified) {
         return next(new AppError('User with this phone number already exists', 400));
       }
 
+      // Generate verification code using the service
+      const verificationCode = await this.verificationService.sendVerificationCode(phoneNumber);
+      
       // Hash the PIN
       const hashedPin = await bcrypt.hash(pin, 12);
       
-      // Generate verification code
-      const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
-      const verificationExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-      
-      // Create a new pending user
-      const newUser = await User.create({
-        username,
-        phoneNumber,
-        pin: hashedPin,
-        role: 'user',
-        pendingVerification: true,
-        verificationCode,
-        verificationCodeExpires: verificationExpires,
-        coinWallet: { balance: 0, transactions: [] } // No coins yet - will add after verification
-      });
-      
-      // In development, log the verification code (in production, send SMS)
-      console.log(`📱 VERIFICATION CODE for ${phoneNumber}: ${verificationCode}`);
+      // If user exists but is unverified, update the record
+      if (existingUser) {
+        existingUser.username = username;
+        existingUser.pin = hashedPin;
+        existingUser.verificationCode = verificationCode;
+        existingUser.verificationCodeExpires = new Date(Date.now() + 10 * 60 * 1000);
+        existingUser.pendingVerification = true;
+        await existingUser.save();
+        
+        console.log(`📱 Updated unverified user with VERIFICATION CODE for ${phoneNumber}: ${verificationCode}`);
+      } else {
+        // Create new unverified user
+        await User.create({
+          username,
+          phoneNumber,
+          pin: hashedPin,
+          role: 'user',
+          pendingVerification: true,
+          verificationCode,
+          verificationCodeExpires: new Date(Date.now() + 10 * 60 * 1000),
+          phoneVerified: false,
+          coinWallet: { balance: 0, transactions: [] }
+        });
+        
+        console.log(`📱 Created new user with VERIFICATION CODE for ${phoneNumber}: ${verificationCode}`);
+      }
       
       // Respond with success but no token yet
       res.status(200).json({
