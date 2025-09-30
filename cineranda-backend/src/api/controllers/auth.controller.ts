@@ -43,67 +43,157 @@ export class AuthController {
         return next(new AppError('Username, phone number and PIN are required', 400));
       }
 
-      // Hash the PIN before saving
+      // Check if user with this phone number already exists
+      const existingUser = await User.findOne({ phoneNumber });
+      if (existingUser) {
+        return next(new AppError('User with this phone number already exists', 400));
+      }
+
+      // Hash the PIN
       const hashedPin = await bcrypt.hash(pin, 12);
       
-      // Create new user
+      // Generate verification code
+      const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+      const verificationExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+      
+      // Create a new pending user
       const newUser = await User.create({
         username,
         phoneNumber,
         pin: hashedPin,
-        // Use role instead of roles to match your model
         role: 'user',
-        // Initialize coinWallet
-        coinWallet: { balance: 0, transactions: [] }
+        pendingVerification: true,
+        verificationCode,
+        verificationCodeExpires: verificationExpires,
+        coinWallet: { balance: 0, transactions: [] } // No coins yet - will add after verification
       });
       
-      // Apply welcome bonus if configured
+      // In development, log the verification code (in production, send SMS)
+      console.log(`📱 VERIFICATION CODE for ${phoneNumber}: ${verificationCode}`);
+      
+      // Respond with success but no token yet
+      res.status(200).json({
+        status: 'success',
+        message: 'Verification code sent to your phone',
+        data: {
+          phoneNumber,
+          username,
+          verificationRequired: true
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // Add this new method for completing registration after verification
+  verifyAndCompleteRegistration = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { phoneNumber, verificationCode } = req.body;
+      
+      if (!phoneNumber || !verificationCode) {
+        return next(new AppError('Phone number and verification code are required', 400));
+      }
+      
+      // Find user with matching phone and code
+      const user = await User.findOne({
+        phoneNumber,
+        verificationCode,
+        verificationCodeExpires: { $gt: Date.now() },
+        pendingVerification: true
+      });
+      
+      if (!user) {
+        return next(new AppError('Invalid or expired verification code', 400));
+      }
+      
+      // Mark phone as verified and complete registration
+      user.phoneVerified = true;
+      user.pendingVerification = false;
+      user.verificationCode = undefined;
+      user.verificationCodeExpires = undefined;
+      
+      // Now apply welcome bonus
       try {
         const settings = await Settings.findOne();
         if (settings && settings.welcomeBonusAmount > 0) {
           // Initialize coinWallet if not exists
-          if (!newUser.coinWallet) {
-            newUser.coinWallet = {
-              balance: 0,
-              transactions: []
-            };
+          if (!user.coinWallet) {
+            user.coinWallet = { balance: 0, transactions: [] };
           }
           
-          // Add welcome bonus coins
-          newUser.coinWallet.balance += settings.welcomeBonusAmount;
-          newUser.coinWallet.transactions.push({
+          // Add welcome bonus
+          user.coinWallet.balance += settings.welcomeBonusAmount;
+          user.coinWallet.transactions.push({
             amount: settings.welcomeBonusAmount,
             type: 'welcome-bonus',
             description: 'Welcome to Cineranda!',
             createdAt: new Date()
           });
-          
-          await newUser.save();
         }
       } catch (error) {
         console.error('Error applying welcome bonus:', error);
-        // Continue even if bonus fails
       }
       
-      // Generate token with proper type handling
-      // Fix the _id type issue by using proper casting
-      const token = signToken((newUser._id as any).toString());
+      await user.save();
       
-      // Return response with user info (using role instead of roles)
+      // Generate token and send response
+      const token = signToken((user._id as any).toString());
+      
       res.status(201).json({
         status: 'success',
         token,
         data: {
           user: {
-            _id: newUser._id,
-            username: newUser.username,
-            phoneNumber: newUser.phoneNumber,
-            role: newUser.role,
+            _id: user._id,
+            username: user.username,
+            phoneNumber: user.phoneNumber,
+            role: user.role,
+            phoneVerified: true,
             coinWallet: {
-              balance: newUser.coinWallet?.balance || 0
+              balance: user.coinWallet?.balance || 0
             }
           }
         }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // Add a method to resend verification code if needed
+  resendVerificationCode = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { phoneNumber } = req.body;
+      
+      if (!phoneNumber) {
+        return next(new AppError('Phone number is required', 400));
+      }
+      
+      // Find pending user
+      const user = await User.findOne({ 
+        phoneNumber,
+        pendingVerification: true
+      });
+      
+      if (!user) {
+        return next(new AppError('No pending registration found for this phone number', 404));
+      }
+      
+      // Generate new verification code
+      const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+      
+      // Update user with new code
+      user.verificationCode = verificationCode;
+      user.verificationCodeExpires = new Date(Date.now() + 10 * 60 * 1000);
+      await user.save();
+      
+      // Log code in development (send SMS in production)
+      console.log(`📱 NEW VERIFICATION CODE for ${phoneNumber}: ${verificationCode}`);
+      
+      res.status(200).json({
+        status: 'success',
+        message: 'New verification code sent to your phone'
       });
     } catch (error) {
       next(error);

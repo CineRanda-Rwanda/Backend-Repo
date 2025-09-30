@@ -42,6 +42,11 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
       return next(new AppError('Your account has been deactivated', 403));
     }
 
+    // Reject users with pending verification - EXCEPT ADMINS
+    if (currentUser.pendingVerification && currentUser.role !== 'admin') {
+      return next(new AppError('Account verification pending. Please complete verification.', 403));
+    }
+
     // Add user to request object
     req.user = currentUser;
     next();

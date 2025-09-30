@@ -6,8 +6,16 @@ const router = Router();
 const authController = new AuthController();
 
 // --- PUBLIC ROUTES ---
-// Kept your existing public routes
+// Register endpoint (now just starts the process)
 router.post('/register', authController.register);
+
+// Complete registration with verification
+router.post('/verify-registration', authController.verifyAndCompleteRegistration);
+
+// Resend verification code if needed
+router.post('/resend-code', authController.resendVerificationCode);
+
+// Other existing auth routes
 router.post('/login', authController.login);
 router.post('/admin/login', authController.adminLogin);
 router.post('/refresh-token', authController.refreshToken);
