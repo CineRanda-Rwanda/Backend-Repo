@@ -12,7 +12,7 @@ interface JwtPayload {
 }
 
 // This interface will be used by all authenticated routes
-interface AuthRequest extends Request {
+export interface AuthRequest extends Request {
   user?: IUser; // Use the IUser interface
 }
 

@@ -6,6 +6,13 @@ import { upload } from '../../middleware/upload.middleware';
 const router = Router();
 const contentController = new ContentController();
 
+// Public content routes
+router.get('/movies', contentController.getMovies);
+router.get('/movies/search', contentController.searchMovies);
+router.get('/movies/featured', contentController.getFeaturedMovies);
+router.get('/movies/genre/:genreId', contentController.getMoviesByGenre);
+router.get('/movies/:id', contentController.getMovieDetails);
+
 // GET /api/v1/content - Get all content (Admin only)
 router.get(
   '/',

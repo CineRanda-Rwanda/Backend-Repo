@@ -2,18 +2,33 @@ import { Request, Response, NextFunction } from 'express';
 import { S3Service } from '../../core/services/s3.service';
 import { Content } from '../../data/models/movie.model';
 import AppError from '../../utils/AppError';
+import { MovieRepository } from '../../data/repositories/movie.repository';
+import { GenreRepository } from '../../data/repositories/genre.repository';
+import { CategoryRepository } from '../../data/repositories/category.repository';
+import { WatchHistoryRepository } from '../../data/repositories/watchHistory.repository';
+import { AuthRequest } from '../../middleware/auth.middleware';
 
 export class ContentController {
   private s3Service: S3Service;
+  private movieRepository: MovieRepository;
+  private genreRepository: GenreRepository;
+  private categoryRepository: CategoryRepository;
+  private watchHistoryRepository: WatchHistoryRepository;
 
   constructor() {
     this.s3Service = new S3Service();
+    this.movieRepository = new MovieRepository();
+    this.genreRepository = new GenreRepository();
+    this.categoryRepository = new CategoryRepository();
+    this.watchHistoryRepository = new WatchHistoryRepository();
   }
 
   createContent = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const files = req.files as { [fieldname: string]: Express.Multer.File[] } || {};
       
+      console.log('Creating content with body:', req.body); // Debug what's being received
+    
       // Check if title is provided
       if (!req.body.title) {
         return next(new AppError('Title is required.', 400));
@@ -30,7 +45,7 @@ export class ContentController {
         return next(new AppError('Poster image is required.', 400));
       }
       
-      // THIS IS THE KEY CHANGE: Only require movie file for 'Movie' content type
+      // Only require movie file for 'Movie' content type
       if (contentType === 'Movie') {
         if (!files.movieFile || !files.movieFile[0]) {
           return next(new AppError('Movie file is required for content type "Movie".', 400));
@@ -59,6 +74,48 @@ export class ContentController {
       }
       if (req.body.priceInCoins) {
         content.priceInCoins = parseInt(req.body.priceInCoins, 10);
+      }
+      
+      // Handle new fields: genres, categories, cast, releaseYear
+      // Parse genres array
+      if (req.body.genres) {
+        try {
+          content.genres = typeof req.body.genres === 'string' 
+            ? JSON.parse(req.body.genres) 
+            : req.body.genres;
+        } catch (e) {
+          console.log('Error parsing genres:', e);
+          content.genres = [req.body.genres]; // Fallback to single value
+        }
+      }
+      
+      // Parse categories array
+      if (req.body.categories) {
+        try {
+          content.categories = typeof req.body.categories === 'string' 
+            ? JSON.parse(req.body.categories) 
+            : req.body.categories;
+        } catch (e) {
+          console.log('Error parsing categories:', e);
+          content.categories = [req.body.categories]; // Fallback to single value
+        }
+      }
+      
+      // Parse cast array
+      if (req.body.cast) {
+        try {
+          content.cast = typeof req.body.cast === 'string' 
+            ? (req.body.cast.startsWith('[') ? JSON.parse(req.body.cast) : req.body.cast.split(',').map((c: string) => c.trim()))
+            : req.body.cast;
+        } catch (e) {
+          console.log('Error parsing cast:', e);
+          content.cast = [req.body.cast]; // Fallback to single value
+        }
+      }
+      
+      // Handle releaseYear
+      if (req.body.releaseYear) {
+        content.releaseYear = parseInt(req.body.releaseYear, 10);
       }
       
       // Content type specific processing
@@ -90,27 +147,62 @@ export class ContentController {
         if (req.body.duration) {
           content.duration = parseInt(req.body.duration, 10);
         }
+        
+        // Additional movie fields
+        if (req.body.director) {
+          content.director = req.body.director;
+        }
+        if (req.body.language) {
+          content.language = req.body.language;
+        }
+        if (req.body.ageRating) {
+          content.ageRating = req.body.ageRating;
+        }
       } else {
         // Series specific - handle seasons
+        console.log('⭐ PROCESSING SERIES - START ⭐');
         try {
           if (req.body.seasons) {
-            const seasons = typeof req.body.seasons === 'string'
-              ? JSON.parse(req.body.seasons)
-              : req.body.seasons;
+            console.log('Seasons data received:', req.body.seasons);
+            console.log('Seasons data type:', typeof req.body.seasons);
+            
+            let seasons;
+            try {
+              // More robust seasons parsing
+              if (typeof req.body.seasons === 'string') {
+                console.log('Parsing seasons from string');
+                seasons = JSON.parse(req.body.seasons);
+                console.log('Parsed seasons result:', seasons);
+              } else {
+                console.log('Using seasons as-is (already an object)');
+                seasons = req.body.seasons;
+              }
               
-            if (Array.isArray(seasons)) {
-              content.seasons = seasons;
-            } else {
+              if (Array.isArray(seasons)) {
+                console.log('Seasons is a valid array with length:', seasons.length);
+                content.seasons = seasons;
+              } else {
+                console.log('Seasons is not an array, defaulting to empty array');
+                content.seasons = [];
+              }
+            } catch (parseError) {
+              console.error('❌ Error parsing seasons JSON:', parseError);
               content.seasons = [];
             }
           } else {
+            console.log('No seasons data provided, defaulting to empty array');
             content.seasons = [];
           }
+          
+          console.log('✅ SERIES PROCESSING COMPLETE');
         } catch (e) {
+          console.error('❌ Error in series processing:', e);
           content.seasons = [];
         }
       }
       
+      console.log('About to create content:', content); // Debug content object
+    
       // Save content
       const newContent = await Content.create(content);
       
@@ -121,6 +213,7 @@ export class ContentController {
         },
       });
     } catch (error) {
+      console.error('Error creating content:', error);
       next(error);
     }
   };
@@ -329,6 +422,21 @@ export class ContentController {
         subtitles.kin = await this.s3Service.uploadFile(files.subtitleKin[0], 'subtitles');
       }
 
+      // Parse episode-specific cast if provided
+      let episodeCast = [];
+      if (req.body.episodeCast) {
+        try {
+          episodeCast = typeof req.body.episodeCast === 'string' 
+            ? (req.body.episodeCast.startsWith('[') 
+                ? JSON.parse(req.body.episodeCast) 
+                : req.body.episodeCast.split(',').map((c: string) => c.trim()))
+            : req.body.episodeCast;
+        } catch (e) {
+          console.log('Error parsing episode cast:', e);
+          episodeCast = [req.body.episodeCast]; // Fallback to single value
+        }
+      }
+
       // 7. Create new episode object
       const newEpisode = {
         episodeNumber: parseInt(req.body.episodeNumber, 10),
@@ -341,6 +449,8 @@ export class ContentController {
         duration: req.body.duration ? parseInt(req.body.duration, 10) : undefined,
         isFree: req.body.isFree === 'true',
         subtitles: Object.keys(subtitles).length > 0 ? subtitles : undefined,
+        // Add episode-specific cast if provided
+        cast: episodeCast.length > 0 ? episodeCast : undefined
       };
 
       // 8. Add to season and save
@@ -536,6 +646,188 @@ export class ContentController {
       res.status(204).json({
         status: 'success',
         data: null
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // Get movies with pagination and filters
+  getMovies = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 10;
+      
+      // Build filters from query params
+      const filters: any = { isActive: true };
+      
+      if (req.query.genre) {
+        filters.genres = req.query.genre;
+      }
+      
+      if (req.query.category) {
+        filters.categories = req.query.category;
+      }
+      
+      if (req.query.year) {
+        filters.releaseYear = req.query.year;
+      }
+      
+      // Support sort by different fields
+      const sortBy = req.query.sortBy as string || 'createdAt';
+      const sortOrder = req.query.sortOrder as 'asc' | 'desc' || 'desc';
+      
+      const { movies, total, pages } = await this.movieRepository.getMovies(
+        page,
+        limit,
+        filters,
+        sortBy,
+        sortOrder
+      );
+      
+      res.status(200).json({
+        status: 'success',
+        results: movies.length,
+        pagination: {
+          total,
+          page,
+          pages,
+          limit
+        },
+        data: { movies }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // Search movies
+  searchMovies = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { q } = req.query;
+      
+      if (!q) {
+        return next(new AppError('Search query is required', 400));
+      }
+      
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 10;
+      
+      const { movies, total, pages } = await this.movieRepository.searchMovies(
+        q as string,
+        page,
+        limit
+      );
+      
+      res.status(200).json({
+        status: 'success',
+        results: movies.length,
+        pagination: {
+          total,
+          page,
+          pages,
+          limit
+        },
+        data: { movies }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // Get movies by genre
+  getMoviesByGenre = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { genreId } = req.params;
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 10;
+      
+      // Verify genre exists
+      const genre = await this.genreRepository.findById(genreId);
+      if (!genre) {
+        return next(new AppError('Genre not found', 404));
+      }
+      
+      const { movies, total, pages } = await this.movieRepository.getMoviesByGenre(
+        genreId,
+        page,
+        limit
+      );
+      
+      res.status(200).json({
+        status: 'success',
+        results: movies.length,
+        pagination: {
+          total,
+          page,
+          pages,
+          limit
+        },
+        genre: genre.name,
+        data: { movies }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // Get featured movies (for homepage)
+  getFeaturedMovies = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 10;
+      const movies = await this.movieRepository.getFeaturedMovies(limit);
+      
+      res.status(200).json({
+        status: 'success',
+        results: movies.length,
+        data: { movies }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // Get movie details with watch progress for authenticated users
+  getMovieDetails = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+      
+      const movie = await this.movieRepository.findById(id);
+      
+      if (!movie) {
+        return next(new AppError('Movie not found', 404));
+      }
+      
+      // Populate genre and category information
+      await movie.populate('genres', 'name');
+      await movie.populate('categories', 'name');
+      
+      // Get watch history for authenticated users
+      let watchProgress = null;
+      const user = (req as AuthRequest).user;
+      if (!user) {
+        return next(new AppError('Authentication required', 401));
+      }
+      const userId = user._id;
+      const history = await this.watchHistoryRepository.findOne({ 
+        userId, 
+        movieId: id 
+      });
+      
+      if (history) {
+        watchProgress = {
+          watchedDuration: history.watchedDuration,
+          completed: history.completed,
+          lastWatched: history.lastWatched
+        };
+      }
+      
+      res.status(200).json({
+        status: 'success',
+        data: { 
+          movie,
+          watchProgress
+        }
       });
     } catch (error) {
       next(error);

@@ -137,4 +137,107 @@ export class MovieRepository extends BaseRepository<IMovie> {
     
     await this.model.findByIdAndUpdate(movieId, update);
   }
+
+  // Extend your existing movie repository with these new methods
+
+  // Get movies with pagination, filtering, and sorting
+  async getMovies(
+    page: number = 1,
+    limit: number = 10,
+    filters: any = {},
+    sortBy: string = 'createdAt',
+    sortOrder: 'asc' | 'desc' = 'desc'
+  ): Promise<{ movies: IMovie[]; total: number; pages: number }> {
+    const skip = (page - 1) * limit;
+    const sort: any = {};
+    sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
+
+    // Only show active movies
+    filters.isActive = true;
+    
+    const total = await Movie.countDocuments(filters);
+    const pages = Math.ceil(total / limit);
+    
+    const movies = await Movie.find(filters)
+      .sort(sort)
+      .skip(skip)
+      .limit(limit)
+      .populate('genres', 'name')
+      .populate('categories', 'name');
+    
+    return { movies, total, pages };
+  }
+
+  // Search movies by text
+  async searchMovies(
+    query: string,
+    page: number = 1,
+    limit: number = 10
+  ): Promise<{ movies: IMovie[]; total: number; pages: number }> {
+    const skip = (page - 1) * limit;
+    
+    const searchFilter = {
+      $text: { $search: query },
+      isActive: true
+    };
+    
+    const total = await Movie.countDocuments(searchFilter);
+    const pages = Math.ceil(total / limit);
+    
+    const movies = await Movie.find(searchFilter, { score: { $meta: "textScore" } })
+      .sort({ score: { $meta: "textScore" } })
+      .skip(skip)
+      .limit(limit)
+      .populate('genres', 'name')
+      .populate('categories', 'name');
+    
+    return { movies, total, pages };
+  }
+
+  // Get movies by genre
+  async getMoviesByGenre(
+    genreId: string,
+    page: number = 1,
+    limit: number = 10
+  ): Promise<{ movies: IMovie[]; total: number; pages: number }> {
+    return this.getMovies(page, limit, { genres: genreId });
+  }
+
+  // Get movies by category
+  async getMoviesByCategory(
+    categoryId: string,
+    page: number = 1,
+    limit: number = 10
+  ): Promise<{ movies: IMovie[]; total: number; pages: number }> {
+    return this.getMovies(page, limit, { categories: categoryId });
+  }
+
+  // Get featured movies
+  async getFeaturedMovies(limit: number = 10): Promise<IMovie[]> {
+    return Movie.find({ isActive: true, isFeatured: true })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .populate('genres', 'name')
+      .populate('categories', 'name');
+  }
+
+  // Update movie rating when a new rating is added
+  async updateMovieRating(movieId: string, newRating: number): Promise<void> {
+    const movie = await Movie.findById(movieId);
+    if (!movie) return;
+    
+    const currentTotal = movie.averageRating * movie.ratingCount;
+    const newCount = movie.ratingCount + 1;
+    const newAverage = (currentTotal + newRating) / newCount;
+    
+    await Movie.findByIdAndUpdate(movieId, {
+      averageRating: newAverage,
+      ratingCount: newCount
+    });
+  }
+
+  // Increment view count for a movie
+  async incrementViewCount(movieId: string): Promise<void> {
+    await Movie.findByIdAndUpdate(movieId, { $inc: { viewCount: 1 } });
+  }
 }

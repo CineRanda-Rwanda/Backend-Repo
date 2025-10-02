@@ -25,7 +25,7 @@ const SeasonSchema = new Schema({
   episodes: [EpisodeSchema],
 });
 
-// --- MAIN CONTENT INTERFACE & SCHEMA ---
+// --- CONTENT MODEL ---
 export interface IContent extends Document {
   title: string;
   description: string;
@@ -49,6 +49,13 @@ export interface IContent extends Document {
 
   // Series-specific
   seasons?: { seasonNumber: number; episodes: any[] }[];
+  
+  // New fields
+  genres?: mongoose.Types.ObjectId[];
+  categories?: mongoose.Types.ObjectId[];
+  releaseYear?: number;
+  language?: string;
+  ageRating?: string;
 }
 
 const ContentSchema = new Schema<IContent>(
@@ -75,9 +82,148 @@ const ContentSchema = new Schema<IContent>(
 
     // Series-specific
     seasons: [SeasonSchema],
+    
+    // Add new fields
+    genres: [{
+      type: Schema.Types.ObjectId,
+      ref: 'Genre'
+    }],
+    categories: [{
+      type: Schema.Types.ObjectId,
+      ref: 'Category'
+    }],
+    releaseYear: {
+      type: Number
+    },
+    language: {
+      type: String
+    },
+    ageRating: {
+      type: String
+    }
   },
   { timestamps: true }
 );
 
-// We will export it as 'Content' for clarity in our code
+// Export Content model
 export const Content = model<IContent>('Content', ContentSchema);
+
+// --- MOVIE MODEL ---
+export interface IMovie extends Document {
+  title: string;
+  description: string;
+  thumbnailUrl: string;
+  videoUrl: string;
+  trailerUrl?: string;
+  director?: string;
+  cast?: string[];
+  genres: mongoose.Types.ObjectId[]; 
+  categories: mongoose.Types.ObjectId[]; 
+  releaseYear?: number;
+  duration?: number; 
+  ageRating?: string;
+  coinPrice: number;
+  language?: string;
+  subtitles?: string[];
+  isActive: boolean;
+  isFeatured: boolean;
+  averageRating: number; 
+  ratingCount: number;   
+  viewCount: number;     
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const MovieSchema = new Schema(
+  {
+    title: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    description: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    thumbnailUrl: {
+      type: String,
+      required: true
+    },
+    videoUrl: {
+      type: String,
+      required: true
+    },
+    trailerUrl: {
+      type: String
+    },
+    coinPrice: {
+      type: Number,
+      required: true,
+      default: 0
+    },
+    isActive: {
+      type: Boolean,
+      default: true
+    },
+    isFeatured: {
+      type: Boolean,
+      default: false
+    },
+    genres: [{
+      type: Schema.Types.ObjectId,
+      ref: 'Genre'
+    }],
+    categories: [{
+      type: Schema.Types.ObjectId,
+      ref: 'Category'
+    }],
+    director: {
+      type: String,
+      trim: true
+    },
+    cast: [{
+      type: String,
+      trim: true
+    }],
+    releaseYear: {
+      type: Number
+    },
+    duration: {
+      type: Number
+    },
+    ageRating: {
+      type: String
+    },
+    language: {
+      type: String
+    },
+    subtitles: [{
+      type: String
+    }],
+    averageRating: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 5
+    },
+    ratingCount: {
+      type: Number,
+      default: 0
+    },
+    viewCount: {
+      type: Number,
+      default: 0
+    }
+  },
+  { timestamps: true }
+);
+
+// Add text index for search
+MovieSchema.index(
+  { title: 'text', description: 'text', director: 'text' },
+  { weights: { title: 10, description: 5, director: 3 } }
+);
+
+// Export Movie model
+export const Movie = mongoose.model<IMovie>('Movie', MovieSchema);

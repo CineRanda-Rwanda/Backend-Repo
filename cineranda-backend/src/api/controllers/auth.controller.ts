@@ -40,10 +40,16 @@ export class AuthController {
   
   register = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { username, phoneNumber, pin } = req.body;
+      const { username, phoneNumber, pin, preferredChannel } = req.body;
       
       if (!username || !phoneNumber || !pin) {
         return next(new AppError('Username, phone number and PIN are required', 400));
+      }
+      
+      // Validate channel preference if provided
+      let channel: 'sms' | 'whatsapp' | 'both' = 'both';
+      if (preferredChannel && ['sms', 'whatsapp', 'both'].includes(preferredChannel)) {
+        channel = preferredChannel as 'sms' | 'whatsapp' | 'both';
       }
 
       // Check if user exists and is already verified
@@ -53,8 +59,16 @@ export class AuthController {
         return next(new AppError('User with this phone number already exists', 400));
       }
 
-      // Generate verification code using the service
-      const verificationCode = await this.verificationService.sendVerificationCode(phoneNumber);
+      // Generate verification code with the enhanced service
+      // To use registration number
+      const verificationCode = await this.verificationService.sendVerificationCode(phoneNumber, 'both');
+
+      // Or with an alternate number
+      // const verificationCode = await this.verificationService.sendVerificationCode(
+      //   phoneNumber, 
+      //   'both',
+      //   req.body.alternatePhoneNumber
+      // );
       
       // Hash the PIN
       const hashedPin = await bcrypt.hash(pin, 12);
@@ -67,8 +81,6 @@ export class AuthController {
         existingUser.verificationCodeExpires = new Date(Date.now() + 10 * 60 * 1000);
         existingUser.pendingVerification = true;
         await existingUser.save();
-        
-        console.log(`📱 Updated unverified user with VERIFICATION CODE for ${phoneNumber}: ${verificationCode}`);
       } else {
         // Create new unverified user
         await User.create({
@@ -82,14 +94,17 @@ export class AuthController {
           phoneVerified: false,
           coinWallet: { balance: 0, transactions: [] }
         });
-        
-        console.log(`📱 Created new user with VERIFICATION CODE for ${phoneNumber}: ${verificationCode}`);
       }
+      
+      // Determine which channels were used
+      const channelMessage = channel === 'both' 
+        ? 'SMS and WhatsApp' 
+        : (channel === 'sms' ? 'SMS' : 'WhatsApp');
       
       // Respond with success but no token yet
       res.status(200).json({
         status: 'success',
-        message: 'Verification code sent to your phone',
+        message: `Verification code sent via ${channelMessage}`,
         data: {
           phoneNumber,
           username,
@@ -551,6 +566,37 @@ export class AuthController {
         status: 'success',
         token: result.token,
         user: result.user,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // Add this temporary method (REMOVE IN PRODUCTION)
+  resetUserPin = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { username, newPin } = req.body;
+      
+      const bcrypt = require('bcryptjs'); // Use bcryptjs instead of bcrypt to match your imports
+      const hashedPin = await bcrypt.hash(newPin, 12); // Use 12 salt rounds to match your registration
+      
+      // Use User model directly instead of repository
+      const user = await User.findOneAndUpdate(
+        { username },
+        { pin: hashedPin },
+        { new: true }
+      );
+      
+      if (!user) {
+        return res.status(404).json({
+          status: 'fail',
+          message: 'User not found'
+        });
+      }
+      
+      res.status(200).json({
+        status: 'success',
+        message: `PIN reset successfully for user ${username}`
       });
     } catch (error) {
       next(error);

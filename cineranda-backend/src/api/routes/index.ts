@@ -1,26 +1,31 @@
 import { Router } from 'express';
 import authRoutes from './auth.routes';
-import adminRoutes from './admin.routes';
-import contentRouter from './content.routes';
 import userRoutes from './user.routes';
+import contentRoutes from './content.routes';
+import adminRoutes from './admin.routes';
 import settingsRoutes from './settings.routes';
 import verificationRoutes from './verification.routes';
+import genreRoutes from './genre.routes';
+import categoryRoutes from './category.routes';
+import watchHistoryRoutes from './watchHistory.routes';
+import ratingRoutes from './rating.routes';
+import favoriteRoutes from './favorite.routes';
 
 const router = Router();
 
-// Keep your existing auth routes
+// Existing routes
 router.use('/auth', authRoutes);
-
-// Keep your existing admin routes
-router.use('/admin', adminRoutes);
-
-// Add the new content routes
-router.use('/content', contentRouter);
-
-// These routes have /api/v1 prefix, which is inconsistent
-// Let's fix them to match the pattern above
 router.use('/users', userRoutes);
+router.use('/content', contentRoutes);
+router.use('/admin', adminRoutes);
 router.use('/settings', settingsRoutes);
-router.use('/verification', verificationRoutes); // Fixed this path
+router.use('/verification', verificationRoutes);
+
+// New routes
+router.use('/genres', genreRoutes);
+router.use('/categories', categoryRoutes);
+router.use('/watch-history', watchHistoryRoutes);
+router.use('/ratings', ratingRoutes);
+router.use('/favorites', favoriteRoutes);
 
 export default router;

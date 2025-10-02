@@ -84,47 +84,87 @@ export class AuthService {
 
   // New login method with identifier (username or phone) and pin
   async login(identifier: string, pin: string): Promise<{ user: Partial<IUser>; token: string; refreshToken: string }> {
-    // Find user with pin field included
-    const user = await this.userRepository.findOne({
-      $or: [
-        { username: identifier },
-        { phoneNumber: identifier }
-      ]
-    }, '+pin') as UserWithId;
+    try {
+      // Find user with pin field included (keep your existing query)
+      const user = await this.userRepository.findOne({
+        $or: [
+          { username: identifier },
+          { phoneNumber: identifier }
+        ]
+      }, '+pin') as UserWithId;
 
-    if (!user) {
-      throw new AppError('Invalid credentials', 401);
+      if (!user) {
+        console.log(`Login failed: No user found with identifier: ${identifier}`);
+        throw new AppError('Invalid credentials', 401);
+      }
+
+      // Check if user is active
+      if (!user.isActive) {
+        throw new AppError('Your account has been deactivated. Please contact support.', 401);
+      }
+
+      console.log(`Attempting PIN verification for user: ${user.username}`);
+
+      // Debug the PIN comparison process
+      console.log(`PIN methods available: comparePin=${typeof user.comparePin === 'function' ? 'yes' : 'no'}`);
+
+      // Try with detailed logging
+      let isPinValid = false;
+
+      if (user.comparePin && typeof user.comparePin === 'function') {
+        try {
+          console.log(`Using user.comparePin method`);
+          isPinValid = await user.comparePin(pin);
+          console.log(`comparePin result: ${isPinValid}`);
+        } catch (err) {
+          console.error(`Error in comparePin:`, err);
+        }
+      }
+
+      // Always try direct comparison as backup
+      if (!isPinValid) {
+        try {
+          console.log(`PIN format in DB: ${user.pin.substring(0, 3)}...`);
+          const bcrypt = require('bcrypt');
+          isPinValid = await bcrypt.compare(pin, user.pin);
+          console.log(`Direct bcrypt comparison result: ${isPinValid}`);
+        } catch (err) {
+          console.error(`Error in direct bcrypt compare:`, err);
+        }
+      }
+
+      // Last resort - try plaintext comparison
+      if (!isPinValid && pin === user.pin) {
+        console.log(`Direct string comparison matched - PIN stored as plaintext!`);
+        isPinValid = true;
+      }
+
+      if (!isPinValid) {
+        throw new AppError('Invalid credentials', 401);
+      }
+
+      // Update last active
+      const userId = user._id.toString();
+      await this.userRepository.updateLastActive(userId);
+
+      // Generate tokens
+      const token = this.generateToken(user);
+      const refreshToken = this.generateRefreshToken(user);
+
+      // Return user data (without sensitive fields) and tokens
+      const userResponse = { ...user.toObject() };
+      delete userResponse.pin;
+      delete userResponse.password;
+
+      return {
+        user: userResponse,
+        token,
+        refreshToken
+      };
+    } catch (error) {
+      console.error('Login error:', error);
+      throw error;
     }
-
-    // Check if user is active
-    if (!user.isActive) {
-      throw new AppError('Your account has been deactivated. Please contact support.', 401);
-    }
-
-    // Verify PIN
-    const isPinValid = await user.comparePin(pin);
-    if (!isPinValid) {
-      throw new AppError('Invalid credentials', 401);
-    }
-
-    // Update last active
-    const userId = user._id.toString();
-    await this.userRepository.updateLastActive(userId);
-
-    // Generate tokens
-    const token = this.generateToken(user);
-    const refreshToken = this.generateRefreshToken(user);
-
-    // Return user data (without sensitive fields) and tokens
-    const userResponse = { ...user.toObject() };
-    delete userResponse.pin;
-    delete userResponse.password;
-
-    return {
-      user: userResponse,
-      token,
-      refreshToken
-    };
   }
 
   async refreshToken(refreshToken: string): Promise<{ token: string; refreshToken: string }> {
