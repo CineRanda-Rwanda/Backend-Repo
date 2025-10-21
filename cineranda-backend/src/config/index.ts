@@ -59,7 +59,15 @@ const config = {
     },
     airtelMoney: {
       apiKey: process.env.AIRTEL_MONEY_API_KEY
-    }
+    },
+    flutterwave: {
+      publicKey: process.env.FLUTTERWAVE_PUBLIC_KEY || '',
+      secretKey: process.env.FLUTTERWAVE_SECRET_KEY || '',
+      encryptionKey: process.env.FLUTTERWAVE_ENCRYPTION_KEY || '',
+      secretHash: process.env.FLUTTERWAVE_SECRET_HASH || ''
+    },
+    callbackUrl: process.env.PAYMENT_CALLBACK_URL || 'http://localhost:5000/api/v1/payments/callback',
+    webhookUrl: process.env.PAYMENT_WEBHOOK_URL || 'http://localhost:5000/api/v1/payments/webhook'
   },
   
   admin: {
@@ -88,7 +96,10 @@ const config = {
       currency: 'USD',
       paymentMethods: ['paypal', 'stripe', 'bank-card']
     }
-  }
+  },
+  
+  // Add clientUrl for redirects
+  clientUrl: process.env.CLIENT_URL || 'http://localhost:3000'
 };
 
 export default config;

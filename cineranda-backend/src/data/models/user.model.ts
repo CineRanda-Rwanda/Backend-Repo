@@ -57,6 +57,14 @@ export interface IUser extends Document {
   verificationCode?: string; // Added for phone number verification
   verificationCodeExpires?: Date; // Added for phone number verification
   phoneVerified?: boolean; // Added for phone number verification
+  balance: number; // Added balance field
+  transactions: Array<{
+    type: 'deposit' | 'purchase' | 'refund' | 'gift'; // Changed type to enum
+    amount: number;
+    description?: string;
+    reference?: string;
+    createdAt: Date;
+  }>;
   comparePassword(candidatePassword: string): Promise<boolean>;
   comparePin(candidatePin: string): Promise<boolean>;
 }
@@ -210,6 +218,30 @@ const userSchema = new Schema<IUser>(
       type: Boolean,
       default: false,
     },
+    // --- ADDED BALANCE AND TRANSACTIONS FIELDS TO SCHEMA ---
+    balance: {
+      type: Number,
+      default: 0,
+    },
+    transactions: [
+      {
+        type: {
+          type: String,
+          enum: ['deposit', 'purchase', 'refund', 'gift'],
+          required: true,
+        },
+        amount: {
+          type: Number,
+          required: true,
+        },
+        description: { type: String },
+        reference: { type: String },
+        createdAt: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
   },
   {
     timestamps: true,

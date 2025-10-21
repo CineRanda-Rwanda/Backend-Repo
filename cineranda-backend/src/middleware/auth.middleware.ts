@@ -2,18 +2,21 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { User, IUser } from '../data/models/user.model';
 import AppError from '../utils/AppError';
-import config from '../config'; // Use the config file for secrets
+import config from '../config';
+import mongoose from 'mongoose';
 
-// Improved JWT payload interface for better type safety
+// JWT payload interface remains unchanged
 interface JwtPayload {
   userId: string;
   iat?: number;
   exp?: number;
 }
 
-// This interface will be used by all authenticated routes
+// Keep your interface definition as is
 export interface AuthRequest extends Request {
-  user?: IUser; // Use the IUser interface
+  user?: IUser & {
+    _id: mongoose.Types.ObjectId;
+  };
 }
 
 export const authenticate = async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -27,31 +30,27 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
       return next(new AppError('You are not logged in. Please log in to get access.', 401));
     }
 
-    // Type-safe token verification
     const decoded = jwt.verify(token, config.jwt.secret) as JwtPayload;
-
-    // Use the correct property from the decoded token
     const currentUser = await User.findById(decoded.userId);
 
     if (!currentUser) {
       return next(new AppError('The user belonging to this token no longer exists.', 401));
     }
 
-    // Safe check for isActive property (handles undefined)
     if (currentUser.isActive === false) {
       return next(new AppError('Your account has been deactivated', 403));
     }
 
-    // Reject users with pending verification - EXCEPT ADMINS
     if (currentUser.pendingVerification && currentUser.role !== 'admin') {
       return next(new AppError('Account verification pending. Please complete verification.', 403));
     }
 
-    // Add user to request object
-    req.user = currentUser;
+    // Use type assertion to tell TypeScript this is the correct type
+    req.user = currentUser as unknown as (IUser & { _id: mongoose.Types.ObjectId });
+    
     next();
   } catch (error) {
-    // Handle specific JWT errors with clear messages
+    // Error handling remains unchanged
     if (error instanceof jwt.JsonWebTokenError) {
       return next(new AppError('Invalid token. Please log in again.', 401));
     }

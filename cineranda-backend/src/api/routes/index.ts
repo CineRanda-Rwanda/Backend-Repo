@@ -10,6 +10,7 @@ import categoryRoutes from './category.routes';
 import watchHistoryRoutes from './watchHistory.routes';
 import ratingRoutes from './rating.routes';
 import favoriteRoutes from './favorite.routes';
+import paymentRoutes from './payment.routes';
 
 const router = Router();
 
@@ -27,5 +28,6 @@ router.use('/categories', categoryRoutes);
 router.use('/watch-history', watchHistoryRoutes);
 router.use('/ratings', ratingRoutes);
 router.use('/favorites', favoriteRoutes);
+router.use('/payments', paymentRoutes);
 
 export default router;

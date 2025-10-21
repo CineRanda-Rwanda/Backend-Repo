@@ -1,7 +1,6 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import { json, urlencoded } from 'express';
 import config from './config';
 import routes from './api/routes';
 import errorHandler from './middleware/errorHandler';
@@ -15,8 +14,8 @@ const app = express();
 // Middleware
 app.use(helmet());
 app.use(cors());
-app.use(json());
-app.use(urlencoded({ extended: true }));
+app.use(express.json()); // This line is critical
+app.use(express.urlencoded({ extended: true }));
 app.use(requestLogger);
 
 // Apply location detection to all routes

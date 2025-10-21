@@ -1,117 +1,71 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
 export interface IPurchase extends Document {
-  user: mongoose.Types.ObjectId;
-  content: mongoose.Types.ObjectId;
-  contentType: 'movie' | 'episode' | 'series-bundle';
-  price: number;
-  currency: 'RWF' | 'USD' | 'COINS';
-  pricingTier: 'rwanda' | 'east-africa' | 'other-africa' | 'international';
-  paymentMethod: 'mtn-momo' | 'airtel-money' | 'bank-card' | 'paypal' | 'stripe' | 'coins' | 'admin-grant';
-  paymentStatus: 'pending' | 'completed' | 'failed' | 'refunded';
+  userId: mongoose.Types.ObjectId;
+  contentId: mongoose.Types.ObjectId;
+  contentType: string;
+  amountPaid: number;
+  coinAmount: number;
+  paymentMethod: string;
   transactionId: string;
-  externalTransactionId?: string;
-  accessGrantedAt?: Date;
-  expiresAt?: Date;
-  isActive: boolean;
-  userLocation?: string;
-  userIpAddress?: string;
-  deviceInfo?: string;
-  conversionSource?: 'trailer' | 'search' | 'featured' | 'recommendation' | 'direct';
-  grantedByAdmin?: mongoose.Types.ObjectId;
-  adminNotes?: string;
-  refundReason?: string;
-  refundedAt?: Date;
-  refundedBy?: mongoose.Types.ObjectId;
+  transactionRef: string;
+  status: 'pending' | 'completed' | 'failed';
+  purchaseType: 'content' | 'wallet';
+  meta: any;
   createdAt: Date;
   updatedAt: Date;
 }
 
-const purchaseSchema: Schema = new Schema(
+const PurchaseSchema = new Schema(
   {
-    user: {
+    userId: {
       type: Schema.Types.ObjectId,
       ref: 'User',
-      required: [true, 'User reference is required']
+      required: true
     },
-    content: {
+    contentId: {
       type: Schema.Types.ObjectId,
-      ref: 'Movie',
-      required: [true, 'Content reference is required']
+      ref: 'Content'
     },
     contentType: {
       type: String,
-      enum: ['movie', 'episode', 'series-bundle'],
-      required: [true, 'Content type is required']
+      enum: ['Movie', 'Series', 'Episode', 'WalletTopUp']
     },
-    price: {
+    amountPaid: {
       type: Number,
-      required: [true, 'Price is required'],
-      min: [0, 'Price cannot be negative']
+      required: true
     },
-    currency: {
-      type: String,
-      enum: ['RWF', 'USD', 'COINS'],
-      required: [true, 'Currency is required']
-    },
-    pricingTier: {
-      type: String,
-      enum: ['rwanda', 'east-africa', 'other-africa', 'international'],
-      required: [true, 'Pricing tier is required']
+    coinAmount: {
+      type: Number,
+      default: 0
     },
     paymentMethod: {
       type: String,
-      enum: ['mtn-momo', 'airtel-money', 'bank-card', 'paypal', 'stripe', 'coins', 'admin-grant'],
-      required: [true, 'Payment method is required']
-    },
-    paymentStatus: {
-      type: String,
-      enum: ['pending', 'completed', 'failed', 'refunded'],
-      default: 'pending'
+      required: true
     },
     transactionId: {
       type: String,
-      required: [true, 'Transaction ID is required'],
-      unique: true
+      required: true
     },
-    externalTransactionId: String,
-    accessGrantedAt: Date,
-    expiresAt: Date,
-    isActive: {
-      type: Boolean,
-      default: true
-    },
-    userLocation: String,
-    userIpAddress: String,
-    deviceInfo: String,
-    conversionSource: {
+    transactionRef: {
       type: String,
-      enum: ['trailer', 'search', 'featured', 'recommendation', 'direct']
+      required: true
     },
-    grantedByAdmin: {
-      type: Schema.Types.ObjectId,
-      ref: 'User'
+    status: {
+      type: String,
+      enum: ['pending', 'completed', 'failed'],
+      default: 'pending'
     },
-    adminNotes: String,
-    refundReason: String,
-    refundedAt: Date,
-    refundedBy: {
-      type: Schema.Types.ObjectId,
-      ref: 'User'
+    purchaseType: {
+      type: String,
+      enum: ['content', 'wallet'],
+      default: 'content'
+    },
+    meta: {
+      type: Schema.Types.Mixed
     }
   },
-  {
-    timestamps: true
-  }
+  { timestamps: true }
 );
 
-// Indexes for efficient queries
-purchaseSchema.index({ user: 1 });
-purchaseSchema.index({ content: 1 });
-purchaseSchema.index({ transactionId: 1 }, { unique: true });
-purchaseSchema.index({ paymentStatus: 1 });
-purchaseSchema.index({ createdAt: 1 });
-
-const Purchase = mongoose.model<IPurchase>('Purchase', purchaseSchema);
-
-export default Purchase;
+export const Purchase = mongoose.model<IPurchase>('Purchase', PurchaseSchema);
