@@ -71,7 +71,7 @@ export class AuthController {
       // );
       
       // Hash the PIN
-      const hashedPin = await bcrypt.hash(pin, 12);
+      const hashedPin = pin; // Let the model handle the hashing
       
       // If user exists but is unverified, update the record
       if (existingUser) {
@@ -390,8 +390,8 @@ export class AuthController {
         return next(new AppError('Old PIN and new PIN are required.', 400));
       }
 
-      // Your existing change PIN logic here...
-      // await this.authService.changePin(userId, oldPin, newPin);
+    
+      await this.authService.changePin(userId.toString(), oldPin, newPin);
 
       res.status(200).json({
         status: 'success',

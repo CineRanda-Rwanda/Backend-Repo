@@ -259,7 +259,7 @@ userSchema.pre<IUser>('save', async function (next) {
     }
   }
 
-  if (this.isModified('pin') && this.pin) {
+  if (this.isModified('pin') && this.pin && !this.pin.startsWith('$2')) {
     try {
       const salt = await bcrypt.genSalt(10);
       this.pin = await bcrypt.hash(this.pin, salt);
@@ -283,8 +283,9 @@ userSchema.methods.comparePassword = async function (
 userSchema.methods.comparePin = async function (
   candidatePin: string
 ): Promise<boolean> {
-  if (!this.pin) return false;
-  return bcrypt.compare(candidatePin, this.pin);
+  // Use bcryptjs instead of bcrypt to match registration
+  const bcryptjs = require('bcryptjs');
+  return await bcryptjs.compare(candidatePin, this.pin);
 };
 
 // Add a method to add coins to wallet

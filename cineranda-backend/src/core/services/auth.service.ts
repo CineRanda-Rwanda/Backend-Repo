@@ -125,9 +125,10 @@ export class AuthService {
       if (!isPinValid) {
         try {
           console.log(`PIN format in DB: ${user.pin.substring(0, 3)}...`);
-          const bcrypt = require('bcrypt');
-          isPinValid = await bcrypt.compare(pin, user.pin);
-          console.log(`Direct bcrypt comparison result: ${isPinValid}`);
+          // Use bcryptjs instead of bcrypt to match registration
+          const bcryptjs = require('bcryptjs');
+          isPinValid = await bcryptjs.compare(pin, user.pin);
+          console.log(`Direct bcryptjs comparison result: ${isPinValid}`);
         } catch (err) {
           console.error(`Error in direct bcrypt compare:`, err);
         }
@@ -174,7 +175,7 @@ export class AuthService {
       
       // Get user - explicitly type as UserWithId
       const user = await this.userRepository.findById(decoded.userId) as UserWithId;
-      if (!user || !user.isActive) {
+      if (!user || !user.isActive)  {
         throw new AppError('Invalid refresh token', 401);
       }
 
@@ -356,8 +357,9 @@ export class AuthService {
       throw new AppError('PIN must be 4 digits', 400);
     }
     
-    // Update PIN
-    user.pin = newPin;
+    // Update PIN - hash it properly
+    const bcrypt = require('bcrypt');
+    user.pin = await bcrypt.hash(newPin, 12);  // Use salt rounds 12 to match registration
     await user.save();
     
     return true;
@@ -445,7 +447,8 @@ export class AuthService {
       console.log(`Updating PIN for user: ${user._id}`);
       
       // Update PIN - handle hashing in pre-save hook
-      user.pin = newPin;
+      const bcrypt = require('bcrypt');
+      user.pin = await bcrypt.hash(newPin, 12);  // Match registration's 12 salt rounds
       user.passwordResetToken = undefined;
       user.passwordResetExpires = undefined;
       await user.save();
@@ -520,7 +523,8 @@ export class AuthService {
     }
 
     // If the user is found, update the PIN and clear the reset fields
-    user.pin = newPin;
+    const bcrypt = require('bcrypt');
+    user.pin = await bcrypt.hash(newPin, 12);  // Match registration's 12 salt rounds
     user.pinResetCode = undefined;
     user.pinResetExpires = undefined;
 
