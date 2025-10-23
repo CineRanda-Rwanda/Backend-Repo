@@ -764,9 +764,11 @@ export class ContentController {
         return next(new AppError('Search query is required', 400));
       }
       
-      const searchResults = await Content.find({
+      console.log(`Searching for movies with query: "${query}"`);
+      
+      // Find movies matching the search query
+      const movies = await Content.find({
         contentType: 'Movie',
-        isPublished: true,
         $or: [
           { title: { $regex: query, $options: 'i' } },
           { description: { $regex: query, $options: 'i' } },
@@ -779,9 +781,9 @@ export class ContentController {
       
       res.status(200).json({
         status: 'success',
-        results: searchResults.length,
+        results: movies.length,
         data: {
-          movies: searchResults
+          movies
         }
       });
     } catch (error) {
@@ -797,31 +799,54 @@ export class ContentController {
       const page = parseInt(req.query.page as string) || 1;
       const limit = parseInt(req.query.limit as string) || 10;
       
+      console.log(`Finding movies for genre ID: ${genreId}`);
+      
       // Verify genre exists
       const genre = await this.genreRepository.findById(genreId);
       if (!genre) {
         return next(new AppError('Genre not found', 404));
       }
+      console.log(`Genre found: ${genre.name}`);
       
-      const { movies, total, pages } = await this.movieRepository.getMoviesByGenre(
-        genreId,
-        page,
-        limit
-      );
+      // Find movies with this genre - use direct DB query instead of repository
+      const skip = (page - 1) * limit;
       
+      // Get total count for pagination
+      const totalMovies = await Content.countDocuments({ 
+        contentType: 'Movie', 
+        isPublished: true,
+        genres: { $in: [genreId] }
+      });
+      
+      console.log(`Found ${totalMovies} movies matching genre criteria`);
+      
+      // Get movies with pagination
+      const movies = await Content.find({ 
+        contentType: 'Movie',
+        isPublished: true,
+        genres: { $in: [genreId] }
+      })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .select('title description posterImageUrl releaseYear priceInCoins genres categories')
+        .populate('genres')
+        .populate('categories');
+    
       res.status(200).json({
         status: 'success',
         results: movies.length,
         pagination: {
-          total,
+          total: totalMovies,
           page,
-          pages,
+          pages: Math.ceil(totalMovies / limit),
           limit
         },
         genre: genre.name,
         data: { movies }
       });
     } catch (error) {
+      console.error('Error fetching movies by genre:', error);
       next(error);
     }
   };
@@ -847,44 +872,53 @@ export class ContentController {
     try {
       const { id } = req.params;
       
-      const movie = await this.movieRepository.findById(id);
+      console.log(`Fetching movie details for ID: ${id}`);
+      
+      // Use Content model directly instead of repository
+      const movie = await Content.findOne({
+        _id: id,
+        contentType: 'Movie'
+      })
+      .populate('genres')
+      .populate('categories');
       
       if (!movie) {
         return next(new AppError('Movie not found', 404));
       }
       
-      // Populate genre and category information
-      await movie.populate('genres', 'name');
-      await movie.populate('categories', 'name');
+      console.log(`Found movie: ${movie.title}`);
       
-      // Get watch history for authenticated users
+      // Check if user has purchased this movie (optional auth)
+      let isPurchased = false;
       let watchProgress = null;
-      const user = (req as AuthRequest).user;
-      if (!user) {
-        return next(new AppError('Authentication required', 401));
-      }
-      const userId = user._id;
-      const history = await this.watchHistoryRepository.findOne({ 
-        userId, 
-        movieId: id 
-      });
       
-      if (history) {
-        watchProgress = {
-          watchedDuration: history.watchedDuration,
-          completed: history.completed,
-          lastWatched: history.lastWatched
-        };
+      const authReq = req as AuthRequest;
+      if (authReq.user) {
+        // Get watch history for authenticated users
+        const history = await this.watchHistoryRepository.findOne({ 
+          user: authReq.user._id, 
+          content: id 
+        });
+        
+        if (history) {
+          watchProgress = {
+            progress: (history as any).progress || 0,
+            totalDuration: (history as any).totalDuration,
+            lastWatched: history.lastWatched
+          };
+        }
       }
       
       res.status(200).json({
         status: 'success',
         data: { 
           movie,
+          isPurchased,
           watchProgress
         }
       });
     } catch (error) {
+      console.error('Error fetching movie details:', error);
       next(error);
     }
   };
@@ -989,6 +1023,40 @@ export class ContentController {
       });
     } catch (error) {
       console.error('Error fetching movies by category:', error);
+      next(error);
+    }
+  };
+
+  // Toggle publish status of content
+  togglePublishStatus = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+      const content = await Content.findById(id);
+
+      if (!content) {
+        return next(new AppError('No content found with that ID', 404));
+      }
+
+      // Toggle the published status
+      content.isPublished = !content.isPublished;
+      await content.save();
+
+      const status = content.isPublished ? 'published' : 'unpublished';
+
+      res.status(200).json({
+        status: 'success',
+        message: `Content successfully ${status}`,
+        data: {
+          content: {
+            _id: content._id,
+            title: content.title,
+            contentType: content.contentType,
+            isPublished: content.isPublished
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Error toggling publish status:', error);
       next(error);
     }
   };

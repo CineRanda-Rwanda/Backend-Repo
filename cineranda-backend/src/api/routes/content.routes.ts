@@ -12,6 +12,8 @@ router.get('/movies/search', contentController.searchMovies);
 router.get('/movies/featured', contentController.getFeaturedMovies);
 router.get('/movies/genre/:genreId', contentController.getMoviesByGenre);
 router.get('/movies/:id', contentController.getMovieDetails);
+router.get('/movies/category/:categoryId', contentController.getMoviesByCategory);
+router.get('/type/:contentType', contentController.getContentByType);
 
 // GET /api/v1/content - Get all content (Admin only)
 router.get(
