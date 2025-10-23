@@ -717,48 +717,40 @@ export class ContentController {
   // Get movies with pagination and filters
   getMovies = async (req: Request, res: Response, next: NextFunction) => {
     try {
+      // Build query
+      const queryObj = { contentType: 'Movie', isPublished: true };
+      
+      // Parse query parameters
       const page = parseInt(req.query.page as string) || 1;
       const limit = parseInt(req.query.limit as string) || 10;
+      const skip = (page - 1) * limit;
       
-      // Build filters from query params
-      const filters: any = { isActive: true };
+      // Get total count for pagination
+      const totalMovies = await Content.countDocuments(queryObj);
       
-      if (req.query.genre) {
-        filters.genres = req.query.genre;
-      }
-      
-      if (req.query.category) {
-        filters.categories = req.query.category;
-      }
-      
-      if (req.query.year) {
-        filters.releaseYear = req.query.year;
-      }
-      
-      // Support sort by different fields
-      const sortBy = req.query.sortBy as string || 'createdAt';
-      const sortOrder = req.query.sortOrder as 'asc' | 'desc' || 'desc';
-      
-      const { movies, total, pages } = await this.movieRepository.getMovies(
-        page,
-        limit,
-        filters,
-        sortBy,
-        sortOrder
-      );
+      // Get movies with pagination
+      const movies = await Content.find(queryObj)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .select('title description posterImageUrl releaseYear priceInCoins genres categories')
+        .populate('genres')
+        .populate('categories');
       
       res.status(200).json({
         status: 'success',
         results: movies.length,
         pagination: {
-          total,
+          total: totalMovies,
           page,
-          pages,
-          limit
+          pages: Math.ceil(totalMovies / limit)
         },
-        data: { movies }
+        data: {
+          movies
+        }
       });
     } catch (error) {
+      console.error('Error fetching movies:', error);
       next(error);
     }
   };
@@ -766,33 +758,34 @@ export class ContentController {
   // Search movies
   searchMovies = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { q } = req.query;
+      const { query } = req.query;
       
-      if (!q) {
+      if (!query) {
         return next(new AppError('Search query is required', 400));
       }
       
-      const page = parseInt(req.query.page as string) || 1;
-      const limit = parseInt(req.query.limit as string) || 10;
-      
-      const { movies, total, pages } = await this.movieRepository.searchMovies(
-        q as string,
-        page,
-        limit
-      );
+      const searchResults = await Content.find({
+        contentType: 'Movie',
+        isPublished: true,
+        $or: [
+          { title: { $regex: query, $options: 'i' } },
+          { description: { $regex: query, $options: 'i' } },
+          { cast: { $in: [new RegExp(query as string, 'i')] } }
+        ]
+      })
+      .select('title description posterImageUrl releaseYear priceInCoins')
+      .populate('genres')
+      .populate('categories');
       
       res.status(200).json({
         status: 'success',
-        results: movies.length,
-        pagination: {
-          total,
-          page,
-          pages,
-          limit
-        },
-        data: { movies }
+        results: searchResults.length,
+        data: {
+          movies: searchResults
+        }
       });
     } catch (error) {
+      console.error('Error searching movies:', error);
       next(error);
     }
   };
@@ -892,6 +885,110 @@ export class ContentController {
         }
       });
     } catch (error) {
+      next(error);
+    }
+  };
+
+  // Get content by type (Movie or Series)
+  getContentByType = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { contentType } = req.params;
+      
+      // Validate content type
+      if (!['Movie', 'Series'].includes(contentType)) {
+        return next(new AppError('Invalid content type. Must be Movie or Series', 400));
+      }
+      
+      // Parse query parameters
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 10;
+      const skip = (page - 1) * limit;
+      
+      // Get content by type
+      const totalCount = await Content.countDocuments({
+        contentType,
+        isPublished: true
+      });
+      
+      const content = await Content.find({
+        contentType,
+        isPublished: true
+      })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .select('title description posterImageUrl releaseYear priceInCoins')
+      .populate('genres')
+      .populate('categories');
+      
+      res.status(200).json({
+        status: 'success',
+        results: content.length,
+        pagination: {
+          total: totalCount,
+          page,
+          pages: Math.ceil(totalCount / limit)
+        },
+        data: {
+          content
+        }
+      });
+    } catch (error) {
+      console.error(`Error fetching ${req.params.contentType}:`, error);
+      next(error);
+    }
+  };
+
+  // Get movies by category
+  getMoviesByCategory = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { categoryId } = req.params;
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 10;
+      
+      // Verify category exists
+      const category = await this.categoryRepository.findById(categoryId);
+      if (!category) {
+        return next(new AppError('Category not found', 404));
+      }
+      
+      // Find movies with this category
+      const skip = (page - 1) * limit;
+      
+      // Get total count for pagination
+      const totalMovies = await Content.countDocuments({ 
+        contentType: 'Movie', 
+        isPublished: true,
+        categories: { $in: [categoryId] }
+      });
+      
+      // Get movies with pagination
+      const movies = await Content.find({ 
+        contentType: 'Movie',
+        isPublished: true,
+        categories: { $in: [categoryId] }
+      })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .select('title description posterImageUrl releaseYear priceInCoins genres categories')
+        .populate('genres')
+        .populate('categories');
+    
+      res.status(200).json({
+        status: 'success',
+        results: movies.length,
+        pagination: {
+          total: totalMovies,
+          page,
+          pages: Math.ceil(totalMovies / limit),
+          limit
+        },
+        category: category.name,
+        data: { movies }
+      });
+    } catch (error) {
+      console.error('Error fetching movies by category:', error);
       next(error);
     }
   };
