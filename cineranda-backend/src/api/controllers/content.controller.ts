@@ -477,104 +477,155 @@ export class ContentController {
   updateEpisode = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { contentId, seasonId, episodeId } = req.params;
-      const files = req.files as { [fieldname: string]: Express.Multer.File[] };
-
-      // 1. Find the series content
-      const series = await Content.findById(contentId);
-      if (!series) {
-        return next(new AppError('No content found with that ID', 404));
-      }
-      if (series.contentType !== 'Series') {
-        return next(new AppError('Content must be a Series to update episodes', 400));
-      }
-
-      // 2. Make sure seasons exist
-      if (!series.seasons || !Array.isArray(series.seasons)) {
-        return next(new AppError('Series has no seasons array defined', 400));
-      }
-
-      // 3. Find the season
-      const seasonIndex = series.seasons.findIndex(
-        (season: any) => season._id.toString() === seasonId
-      );
-      if (seasonIndex === -1) {
-        return next(new AppError('No season found with that ID', 404));
-      }
-
-      // 4. Find the episode
-      const episodeIndex = series.seasons[seasonIndex].episodes.findIndex(
-        (episode: any) => episode._id.toString() === episodeId
-      );
-      if (episodeIndex === -1) {
-        return next(new AppError('No episode found with that ID', 404));
-      }
-
-      // 5. Get the current episode
-      const currentEpisode = series.seasons[seasonIndex].episodes[episodeIndex];
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] } || {};
       
-      // 6. Prepare updates object from request body
-      const updates: any = { ...req.body };
+      console.log('⭐ UPDATE EPISODE - REQUEST ⭐');
+      console.log(`Content ID: ${contentId}, Season ID: ${seasonId}, Episode ID: ${episodeId}`);
+      console.log('Files received:', Object.keys(files));
       
-      // Convert numeric fields
-      if (updates.episodeNumber) updates.episodeNumber = parseInt(updates.episodeNumber, 10);
-      if (updates.duration) updates.duration = parseInt(updates.duration, 10);
-      if (updates.priceInRwf) updates.priceInRwf = parseInt(updates.priceInRwf, 10);
-      if (updates.priceInCoins) updates.priceInCoins = parseInt(updates.priceInCoins, 10);
-      if (updates.isFree !== undefined) updates.isFree = updates.isFree === 'true';
+      // 1. First find the current state to determine what needs updating
+      const content = await Content.findById(contentId);
+      if (!content || content.contentType !== 'Series') {
+        return next(new AppError('Content not found or not a series', 404));
+      }
       
-      // 7. Handle video replacement if provided
+      // 2. Find the season and episode
+      const season = content.seasons?.find((s: any) => s._id.toString() === seasonId);
+      if (!season) {
+        return next(new AppError('Season not found', 404));
+      }
+      
+      const episode = season.episodes?.find((e: any) => e._id.toString() === episodeId);
+      if (!episode) {
+        return next(new AppError('Episode not found', 404));
+      }
+      
+      console.log(`Found episode: ${episode.title} (${episode._id})`);
+      
+      // 3. Prepare updates
+      const updateData: any = {};
+      const arrayUpdates: any = {};
+    
+      // Basic fields
+      if (req.body.title) updateData[`seasons.$[season].episodes.$[episode].title`] = req.body.title;
+      if (req.body.description) updateData[`seasons.$[season].episodes.$[episode].description`] = req.body.description;
+      if (req.body.episodeNumber) updateData[`seasons.$[season].episodes.$[episode].episodeNumber`] = parseInt(req.body.episodeNumber, 10);
+      if (req.body.duration) updateData[`seasons.$[season].episodes.$[episode].duration`] = parseInt(req.body.duration, 10);
+      if (req.body.priceInRwf) updateData[`seasons.$[season].episodes.$[episode].priceInRwf`] = parseInt(req.body.priceInRwf, 10);
+      if (req.body.priceInCoins) updateData[`seasons.$[season].episodes.$[episode].priceInCoins`] = parseInt(req.body.priceInCoins, 10);
+      if (req.body.isFree !== undefined) updateData[`seasons.$[season].episodes.$[episode].isFree`] = req.body.isFree === 'true';
+      if (req.body.trailerYoutubeLink) updateData[`seasons.$[season].episodes.$[episode].trailerYoutubeLink`] = req.body.trailerYoutubeLink;
+    
+      // 4. Handle files (video, subtitles)
       if (files.episodeVideo?.[0]) {
+        console.log('Updating episode video');
         // Delete old video if it exists
-        if (currentEpisode.videoUrl) {
-          await this.s3Service.deleteFile(currentEpisode.videoUrl);
+        if (episode.videoUrl) {
+          try {
+            await this.s3Service.deleteFile(episode.videoUrl);
+            console.log('Old video file deleted');
+          } catch (err) {
+            console.error('Error deleting old video:', err);
+          }
         }
+        
         // Upload new video
-        updates.videoUrl = await this.s3Service.uploadFile(
-          files.episodeVideo[0],
-          'episodes'
-        );
+        const videoUrl = await this.s3Service.uploadFile(files.episodeVideo[0], 'episodes');
+        updateData[`seasons.$[season].episodes.$[episode].videoUrl`] = videoUrl;
+        console.log('New video uploaded:', videoUrl);
       }
       
-      // 8. Handle subtitle replacements if provided
-      const subtitleUpdates: { en?: string; fr?: string; kin?: string } = { ...currentEpisode.subtitles };
+      // 5. Handle subtitles
+      const subtitles = { ...episode.subtitles || {} };
+      let hasSubtitleChanges = false;
       
+      // English subtitles
       if (files.subtitleEn?.[0]) {
-        if (subtitleUpdates.en) {
-          await this.s3Service.deleteFile(subtitleUpdates.en);
+        if (subtitles.en) {
+          try {
+            await this.s3Service.deleteFile(subtitles.en);
+          } catch (err) {
+            console.error('Error deleting old English subtitle:', err);
+          }
         }
-        subtitleUpdates.en = await this.s3Service.uploadFile(files.subtitleEn[0], 'subtitles');
+        subtitles.en = await this.s3Service.uploadFile(files.subtitleEn[0], 'subtitles');
+        hasSubtitleChanges = true;
       }
       
+      // French subtitles
       if (files.subtitleFr?.[0]) {
-        if (subtitleUpdates.fr) {
-          await this.s3Service.deleteFile(subtitleUpdates.fr);
+        if (subtitles.fr) {
+          try {
+            await this.s3Service.deleteFile(subtitles.fr);
+          } catch (err) {
+            console.error('Error deleting old French subtitle:', err);
+          }
         }
-        subtitleUpdates.fr = await this.s3Service.uploadFile(files.subtitleFr[0], 'subtitles');
+        subtitles.fr = await this.s3Service.uploadFile(files.subtitleFr[0], 'subtitles');
+        hasSubtitleChanges = true;
       }
       
+      // Kinyarwanda subtitles
       if (files.subtitleKin?.[0]) {
-        if (subtitleUpdates.kin) {
-          await this.s3Service.deleteFile(subtitleUpdates.kin);
+        if (subtitles.kin) {
+          try {
+            await this.s3Service.deleteFile(subtitles.kin);
+          } catch (err) {
+            console.error('Error deleting old Kinyarwanda subtitle:', err);
+          }
         }
-        subtitleUpdates.kin = await this.s3Service.uploadFile(files.subtitleKin[0], 'subtitles');
+        subtitles.kin = await this.s3Service.uploadFile(files.subtitleKin[0], 'subtitles');
+        hasSubtitleChanges = true;
       }
       
-      // Only update subtitles if any were uploaded
-      if (files.subtitleEn?.[0] || files.subtitleFr?.[0] || files.subtitleKin?.[0]) {
-        updates.subtitles = subtitleUpdates;
+      if (hasSubtitleChanges) {
+        updateData[`seasons.$[season].episodes.$[episode].subtitles`] = subtitles;
+      }
+    
+      // 6. Apply update using MongoDB's update operators
+      console.log('Applying updates:', updateData);
+      
+      const updatedContent = await Content.findOneAndUpdate(
+        { _id: contentId },
+        { $set: updateData },
+        { 
+          new: true, // Return updated document
+          arrayFilters: [
+            { 'season._id': seasonId },
+            { 'episode._id': episodeId }
+          ]
+        }
+      );
+      
+      if (!updatedContent) {
+        return next(new AppError('Failed to update episode', 500));
       }
       
-      // 9. Update the episode
-      Object.assign(series.seasons[seasonIndex].episodes[episodeIndex], updates);
-      await series.save();
+      // 7. Find the updated episode to return
+      if (!updatedContent || !updatedContent.seasons) {
+        return next(new AppError('Failed to retrieve updated content', 500));
+      }
+      
+      const updatedSeason = updatedContent.seasons.find((s: any) => s._id.toString() === seasonId);
+      if (!updatedSeason) {
+        return next(new AppError('Failed to retrieve updated season', 500));
+      }
+      
+      const updatedEpisode = updatedSeason.episodes.find((e: any) => e._id.toString() === episodeId);
+      if (!updatedEpisode) {
+        return next(new AppError('Failed to retrieve updated episode', 500));
+      }
+      
+      console.log('✅ Episode successfully updated');
       
       res.status(200).json({
         status: 'success',
         data: {
-          episode: series.seasons[seasonIndex].episodes[episodeIndex]
+          episode: updatedEpisode
         }
       });
     } catch (error) {
+      console.error('❌ Error updating episode:', error);
       next(error);
     }
   };
@@ -585,69 +636,80 @@ export class ContentController {
   deleteEpisode = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { contentId, seasonId, episodeId } = req.params;
+      
+      console.log('⭐ DELETE EPISODE - REQUEST ⭐');
+      console.log(`Content ID: ${contentId}, Season ID: ${seasonId}, Episode ID: ${episodeId}`);
 
-      // 1. Find the series content
-      const series = await Content.findById(contentId);
-      if (!series) {
-        return next(new AppError('No content found with that ID', 404));
-      }
-      if (series.contentType !== 'Series') {
-        return next(new AppError('Content must be a Series to delete episodes', 400));
-      }
-
-      // 2. Make sure seasons exist
-      if (!series.seasons || !Array.isArray(series.seasons)) {
-        return next(new AppError('Series has no seasons array defined', 400));
-      }
-
-      // 3. Find the season
-      const seasonIndex = series.seasons.findIndex(
-        (season: any) => season._id.toString() === seasonId
-      );
-      if (seasonIndex === -1) {
-        return next(new AppError('No season found with that ID', 404));
-      }
-
-      // 4. Find the episode
-      const episodeIndex = series.seasons[seasonIndex].episodes.findIndex(
-        (episode: any) => episode._id.toString() === episodeId
-      );
-      if (episodeIndex === -1) {
-        return next(new AppError('No episode found with that ID', 404));
-      }
-
-      // 5. Get the episode to delete
-      const episodeToDelete = series.seasons[seasonIndex].episodes[episodeIndex];
-
-      // 6. Delete video and subtitle files from S3
-      if (episodeToDelete.videoUrl) {
-        await this.s3Service.deleteFile(episodeToDelete.videoUrl);
+      // 1. Find the series content to check if episode exists and get file paths
+      const content = await Content.findById(contentId);
+      if (!content || content.contentType !== 'Series') {
+        return next(new AppError('Content not found or not a series', 404));
       }
       
-      if (episodeToDelete.subtitles) {
-        if (episodeToDelete.subtitles.en) {
-          await this.s3Service.deleteFile(episodeToDelete.subtitles.en);
-        }
-        if (episodeToDelete.subtitles.fr) {
-          await this.s3Service.deleteFile(episodeToDelete.subtitles.fr);
-        }
-        if (episodeToDelete.subtitles.kin) {
-          await this.s3Service.deleteFile(episodeToDelete.subtitles.kin);
-        }
+      // 2. Find the season and episode
+      const season = content.seasons?.find((s: any) => s._id.toString() === seasonId);
+      if (!season) {
+        return next(new AppError('Season not found', 404));
       }
-
-      // 7. Remove the episode from the array
-      series.seasons[seasonIndex].episodes.splice(episodeIndex, 1);
       
-      // 8. Save the updated series
-      await series.save();
-
-      // 8. Return 204 No Content
-      res.status(204).json({
-        status: 'success',
-        data: null
-      });
+      const episode = season.episodes?.find((e: any) => e._id.toString() === episodeId);
+      if (!episode) {
+        return next(new AppError('Episode not found', 404));
+      }
+      
+      console.log(`Found episode to delete: ${episode.title} (${episode._id})`);
+      
+      // 3. Delete associated files from S3
+      try {
+        // Delete video file
+        if (episode.videoUrl) {
+          console.log(`Deleting video: ${episode.videoUrl}`);
+          await this.s3Service.deleteFile(episode.videoUrl);
+        }
+        
+        // Delete subtitles
+        if (episode.subtitles) {
+          if (episode.subtitles.en) {
+            console.log(`Deleting EN subtitle: ${episode.subtitles.en}`);
+            await this.s3Service.deleteFile(episode.subtitles.en);
+          }
+          if (episode.subtitles.fr) {
+            console.log(`Deleting FR subtitle: ${episode.subtitles.fr}`);
+            await this.s3Service.deleteFile(episode.subtitles.fr);
+          }
+          if (episode.subtitles.kin) {
+            console.log(`Deleting KIN subtitle: ${episode.subtitles.kin}`);
+            await this.s3Service.deleteFile(episode.subtitles.kin);
+          }
+        }
+      } catch (fileError) {
+        // Log but don't fail if file deletion fails
+        console.error('Error deleting files:', fileError);
+      }
+      
+      // 4. Delete the episode using MongoDB's $pull operator
+      console.log('Removing episode from database...');
+      
+      const result = await Content.updateOne(
+        { _id: contentId },
+        { $pull: { [`seasons.$[season].episodes`]: { _id: episodeId } } },
+        { 
+          arrayFilters: [{ 'season._id': seasonId }]
+        }
+      );
+      
+      console.log('Update result:', result);
+      
+      if (result.modifiedCount === 0) {
+        return next(new AppError('Failed to delete episode', 500));
+      }
+      
+      console.log('✅ Episode successfully deleted');
+      
+      // 5. Return 204 No Content (with no body)
+      return res.status(204).send();
     } catch (error) {
+      console.error('❌ Error deleting episode:', error);
       next(error);
     }
   };
