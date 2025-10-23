@@ -112,19 +112,32 @@ export class CategoryController {
     try {
       const { id } = req.params;
 
+      // 1. Check if category exists
       const category = await this.categoryRepository.findById(id);
-      
       if (!category) {
         return next(new AppError('Category not found', 404));
       }
 
+      // 2. Check if any content is using this category
+      const Content = require('../../data/models/movie.model').Content;
+      const contentWithCategory = await Content.findOne({ categories: id });
+
+      if (contentWithCategory) {
+        return next(
+          new AppError(
+            'Cannot delete category that is in use by content. Remove the category from all content first.',
+            400
+          )
+        );
+      }
+
+      // 3. Delete the category
       await this.categoryRepository.delete(id);
 
-      res.status(200).json({
-        status: 'success',
-        data: null
-      });
+      // 4. Return success with 204 (No Content) status
+      res.status(204).send();
     } catch (error) {
+      console.error('Error deleting category:', error);
       next(error);
     }
   };
