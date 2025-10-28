@@ -6,13 +6,21 @@ import { upload } from '../../middleware/upload.middleware';
 const router = Router();
 const contentController = new ContentController();
 
-// Public content routes
+// --- CRITICAL: Place specific routes BEFORE parameterized routes ---
+
+// Public content routes (specific routes first)
 router.get('/movies', contentController.getMovies);
 router.get('/movies/search', contentController.searchMovies);
 router.get('/movies/featured', contentController.getFeaturedMovies);
 router.get('/movies/genre/:genreId', contentController.getMoviesByGenre);
-router.get('/movies/:id', contentController.getMovieDetails);
 router.get('/movies/category/:categoryId', contentController.getMoviesByCategory);
+
+// Protected route - THIS MUST COME BEFORE /movies/:id
+router.get('/unlocked', authenticate, contentController.getUnlockedContent);
+
+// This parameterized route comes LAST among /movies/ routes
+router.get('/movies/:id', contentController.getMovieDetails);
+
 router.get('/type/:contentType', contentController.getContentByType);
 
 // GET /api/v1/content - Get all content (Admin only)
@@ -93,6 +101,14 @@ router.delete(
   authenticate,
   authorize(['admin']),
   contentController.deleteEpisode
+);
+
+// PATCH /api/v1/content/:id/publish-status - Toggle publish status
+router.patch(
+  '/:id/publish-status',
+  authenticate,
+  authorize(['admin']),
+  contentController.togglePublishStatus
 );
 
 export default router;

@@ -1060,4 +1060,155 @@ export class ContentController {
       next(error);
     }
   };
+
+  // Get purchased movies for the authenticated user
+  getPurchasedMovies = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const authReq = req as AuthRequest;
+      if (!authReq.user) {
+        return next(new AppError('Authentication required', 401));
+      }
+
+      // Get the user with purchased content IDs
+      const User = require('../../data/models/user.model').User;
+      const user = await User.findById(authReq.user._id).select('purchasedContent');
+      
+      if (!user || !user.purchasedContent) {
+        return res.status(200).json({
+          status: 'success',
+          results: 0,
+          data: { movies: [] }
+        });
+      }
+      
+      console.log(`Found ${user.purchasedContent.length} purchased content items for user`);
+      
+      // Parse query parameters
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 10;
+      const skip = (page - 1) * limit;
+      
+      // Find all purchased movies
+      const totalMovies = await Content.countDocuments({ 
+        _id: { $in: user.purchasedContent },
+        contentType: 'Movie'
+      });
+      
+      const movies = await Content.find({ 
+        _id: { $in: user.purchasedContent },
+        contentType: 'Movie'
+      })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .select('title description posterImageUrl releaseYear genres categories')
+        .populate('genres')
+        .populate('categories');
+      
+      console.log(`Found ${movies.length} purchased movies for user`);
+      
+      res.status(200).json({
+        status: 'success',
+        results: movies.length,
+        pagination: {
+          total: totalMovies,
+          page,
+          pages: Math.ceil(totalMovies / limit),
+          limit
+        },
+        data: { movies }
+      });
+    } catch (error) {
+      console.error('Error fetching purchased movies:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * Get all unlocked content for the authenticated user
+   * Fetches from Purchase collection to find what user has bought
+   */
+  getUnlockedContent = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const authReq = req as AuthRequest;
+      if (!authReq.user) {
+        return next(new AppError('Authentication required', 401));
+      }
+
+      console.log(`Fetching unlocked content for user: ${authReq.user._id}`);
+
+      // Import Purchase model
+      const Purchase = require('../../data/models/purchase.model').Purchase;
+
+      // Find all completed purchases for this user
+      const purchases = await Purchase.find({
+        userId: authReq.user._id,
+        status: 'completed',
+        purchaseType: 'content'
+      }).select('contentId');
+
+      console.log(`Found ${purchases.length} purchases for user`);
+
+      // Extract content IDs
+      const purchasedContentIds = purchases
+        .filter((p: any) => p.contentId)
+        .map((p: any) => p.contentId);
+
+      console.log(`Purchased content IDs:`, purchasedContentIds);
+
+      if (purchasedContentIds.length === 0) {
+        return res.status(200).json({
+          status: 'success',
+          results: { movies: 0, series: 0 },
+          data: { movies: [], series: [] }
+        });
+      }
+
+      // Get purchased movies
+      const unlockedMovies = await Content.find({
+        _id: { $in: purchasedContentIds },
+        contentType: 'Movie'
+      })
+        .select('title description posterImageUrl releaseYear duration priceInRwf priceInCoins')
+        .populate('genres')
+        .populate('categories')
+        .lean();
+
+      console.log(`Found ${unlockedMovies.length} unlocked movies`);
+
+      // Get purchased series
+      const unlockedSeries = await Content.find({
+        _id: { $in: purchasedContentIds },
+        contentType: 'Series'
+      })
+        .populate('genres')
+        .populate('categories')
+        .lean();
+
+      console.log(`Found ${unlockedSeries.length} unlocked series`);
+
+      // Mark all series as fully purchased (since user bought the whole series)
+      const markedSeries = unlockedSeries.map((series: any) => ({
+        ...series,
+        isPurchased: true,
+        hasUnlockedEpisodes: true
+      }));
+
+      res.status(200).json({
+        status: 'success',
+        results: {
+          movies: unlockedMovies.length,
+          series: markedSeries.length
+        },
+        data: {
+          movies: unlockedMovies,
+          series: markedSeries
+        }
+      });
+
+    } catch (error) {
+      console.error('Error fetching unlocked content:', error);
+      next(error);
+    }
+  };
 }

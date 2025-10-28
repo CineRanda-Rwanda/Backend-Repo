@@ -48,18 +48,26 @@ export interface IUser extends Document {
     price: number;
     currency: string;
   }>;
+  // ADD THIS NEW FIELD for individual episode purchases
+  purchasedEpisodes?: Array<{
+    contentId: mongoose.Types.ObjectId;  // The series ID
+    episodeId: mongoose.Types.ObjectId;  // The specific episode ID
+    purchaseDate: Date;
+    price: number;
+    currency: string;
+  }>;
   preferredLanguage?: 'kinyarwanda' | 'english' | 'french';
   theme?: 'light' | 'dark';
   coinWallet?: CoinWallet;
-  isTwoFactorEnabled?: boolean; // Added for 2FA
-  twoFactorSecret?: string;   // Added for 2FA
-  pendingVerification?: boolean; // Added for phone number verification
-  verificationCode?: string; // Added for phone number verification
-  verificationCodeExpires?: Date; // Added for phone number verification
-  phoneVerified?: boolean; // Added for phone number verification
-  balance: number; // Added balance field
+  isTwoFactorEnabled?: boolean;
+  twoFactorSecret?: string;
+  pendingVerification?: boolean;
+  verificationCode?: string;
+  verificationCodeExpires?: Date;
+  phoneVerified?: boolean;
+  balance: number;
   transactions: Array<{
-    type: 'deposit' | 'purchase' | 'refund' | 'gift'; // Changed type to enum
+    type: 'deposit' | 'purchase' | 'refund' | 'gift';
     amount: number;
     description?: string;
     reference?: string;
@@ -146,6 +154,16 @@ const userSchema = new Schema<IUser>(
         contentId: { type: mongoose.Types.ObjectId, required: true },
         purchaseDate: { type: Date, required: true },
         expiryDate: { type: Date },
+        price: { type: Number, required: true },
+        currency: { type: String, required: true },
+      },
+    ],
+    // ADD THIS NEW FIELD to the schema
+    purchasedEpisodes: [
+      {
+        contentId: { type: mongoose.Types.ObjectId, required: true },
+        episodeId: { type: mongoose.Types.ObjectId, required: true },
+        purchaseDate: { type: Date, required: true },
         price: { type: Number, required: true },
         currency: { type: String, required: true },
       },

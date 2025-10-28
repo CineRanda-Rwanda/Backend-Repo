@@ -398,4 +398,60 @@ export class PaymentController {
       next(error);
     }
   };
+
+  /**
+   * Add purchased content to user's library after successful payment
+   */
+  private addContentToUserLibrary = async (userId: string, contentId: string, price: number) => {
+    try {
+      await User.findByIdAndUpdate(
+        userId,
+        {
+          $push: {
+            purchasedContent: {
+              contentId: new mongoose.Types.ObjectId(contentId),
+              purchaseDate: new Date(),
+              price: price,
+              currency: 'RWF'
+            }
+          }
+        }
+      );
+      console.log(`Added content ${contentId} to user ${userId}'s library`);
+    } catch (error) {
+      console.error('Error adding content to user library:', error);
+      throw error;
+    }
+  };
+
+  /**
+   * Add purchased episode to user's library
+   */
+  private addEpisodeToUserLibrary = async (
+    userId: string, 
+    contentId: string, 
+    episodeId: string, 
+    price: number
+  ) => {
+    try {
+      await User.findByIdAndUpdate(
+        userId,
+        {
+          $push: {
+            purchasedEpisodes: {
+              contentId: new mongoose.Types.ObjectId(contentId),
+              episodeId: new mongoose.Types.ObjectId(episodeId),
+              purchaseDate: new Date(),
+              price: price,
+              currency: 'RWF'
+            }
+          }
+        }
+      );
+      console.log(`Added episode ${episodeId} from content ${contentId} to user ${userId}'s library`);
+    } catch (error) {
+      console.error('Error adding episode to user library:', error);
+      throw error;
+    }
+  };
 }
