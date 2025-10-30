@@ -18,6 +18,26 @@ export class PaymentController {
   }
 
   /**
+   * Helper method to get correct pricing for content
+   */
+  private getContentPricing(content: any): { priceInRwf: number; priceInCoins: number } {
+    if (content.contentType === 'Movie') {
+      return {
+        priceInRwf: content.priceInRwf || 0,
+        priceInCoins: content.priceInCoins || 0
+      };
+    } else if (content.contentType === 'Series') {
+      // Use discounted price for series (already includes discount if set)
+      return {
+        priceInRwf: content.discountedSeriesPriceInRwf || content.totalSeriesPriceInRwf || 0,
+        priceInCoins: content.discountedSeriesPriceInCoins || content.totalSeriesPriceInCoins || 0
+      };
+    }
+    
+    return { priceInRwf: 0, priceInCoins: 0 };
+  }
+
+  /**
    * Initialize payment for content purchase
    */
   initiateContentPurchase = async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -38,16 +58,23 @@ export class PaymentController {
         return next(new AppError('Content not found', 404));
       }
 
+      // FIX: Get correct pricing based on content type
+      const { priceInRwf, priceInCoins } = this.getContentPricing(content);
+
+      if (priceInRwf <= 0) {
+        return next(new AppError('Invalid content pricing', 400));
+      }
+
       // Initialize payment
       const response = await this.paymentService.initializeContentPurchase(
         req.user,
         contentId,
         content.title,
-        content.priceInRwf,
-        content.priceInCoins
+        priceInRwf,
+        priceInCoins
       );
 
-      // Extract the txRef from the response (moved outside the if block)
+      // Extract the txRef from the response
       const txRef = response?.generatedTxRef || '';
 
       // Create pending purchase record
@@ -58,15 +85,17 @@ export class PaymentController {
           userId,
           contentId,
           content.contentType,
-          content.priceInRwf,
-          content.priceInCoins,
+          priceInRwf,
+          priceInCoins,
           'flutterwave',
           response.data.id?.toString() || 'unknown',
-          txRef, // Use our generated txRef
+          txRef,
           'pending',
           'content',
           {
-            flutterwave: response.data
+            flutterwave: response.data,
+            discountApplied: content.contentType === 'Series' ? content.seriesDiscountPercent : 0,
+            originalPrice: content.contentType === 'Series' ? content.totalSeriesPriceInRwf : priceInRwf
           }
         );
       }
@@ -75,7 +104,9 @@ export class PaymentController {
         status: 'success',
         data: {
           paymentLink: response.data.link,
-          transactionRef: txRef // Now txRef is available here
+          transactionRef: txRef,
+          amount: priceInRwf,
+          discount: content.contentType === 'Series' ? content.seriesDiscountPercent : 0
         }
       });
     } catch (error) {
@@ -136,7 +167,7 @@ export class PaymentController {
           0,
           'flutterwave',
           response.data.id?.toString() || 'unknown',
-          txRef, // Use our generated txRef instead of response.data.tx_ref
+          txRef,
           'pending',
           'wallet',
           {
@@ -149,7 +180,7 @@ export class PaymentController {
         status: 'success',
         data: {
           paymentLink: response.data.link,
-          transactionRef: txRef // Use our generated txRef
+          transactionRef: txRef
         }
       });
     } catch (error) {
@@ -207,9 +238,19 @@ export class PaymentController {
         return next(new AppError('User not found', 404));
       }
 
+      // FIX: Get correct pricing based on content type
+      const { priceInRwf, priceInCoins } = this.getContentPricing(content);
+
+      if (priceInRwf <= 0) {
+        return next(new AppError('Invalid content pricing', 400));
+      }
+
       // Check if user has enough balance
-      if (user.balance < content.priceInRwf) {
-        return next(new AppError(`Insufficient balance. You need ${content.priceInRwf} RWF but have ${user.balance} RWF.`, 400));
+      if (user.balance < priceInRwf) {
+        return next(new AppError(
+          `Insufficient balance. You need ${priceInRwf} RWF but have ${user.balance} RWF.`, 
+          400
+        ));
       }
 
       // Check if already purchased
@@ -222,10 +263,26 @@ export class PaymentController {
         return next(new AppError('You have already purchased this content', 400));
       }
 
-      // 1. Deduct from user balance
+      // 1. Deduct from user balance AND add to purchasedContent
       const updatedUser = await User.findByIdAndUpdate(
         user._id,
-        { $inc: { balance: -content.priceInRwf } },
+        { 
+          $inc: { balance: -priceInRwf },
+          $push: {
+            purchasedContent: {
+              contentId: contentId,
+              purchaseDate: new Date(),
+              price: priceInRwf,
+              currency: 'RWF'
+            },
+            transactions: {
+              type: 'purchase',
+              amount: -priceInRwf,
+              description: `Purchased ${content.title}${content.contentType === 'Series' && content.seriesDiscountPercent ? ` (${content.seriesDiscountPercent}% discount)` : ''}`,
+              createdAt: new Date()
+            }
+          }
+        },
         { new: true }
       );
 
@@ -235,25 +292,186 @@ export class PaymentController {
         String(user._id),
         contentId,
         content.contentType,
-        content.priceInRwf,
-        content.priceInCoins,
+        priceInRwf,
+        priceInCoins,
         'wallet',
         transactionRef,
         transactionRef,
         'completed',
         'content',
-        { purchaseDate: new Date() }
+        { 
+          purchaseDate: new Date(),
+          discountApplied: content.contentType === 'Series' ? content.seriesDiscountPercent : 0,
+          originalPrice: content.contentType === 'Series' ? content.totalSeriesPriceInRwf : priceInRwf
+        }
       );
 
       res.status(200).json({
         status: 'success',
         message: 'Content purchased successfully',
         data: {
+          content: {
+            _id: content._id,
+            title: content.title,
+            contentType: content.contentType
+          },
+          pricePaid: priceInRwf,
+          originalPrice: content.contentType === 'Series' ? content.totalSeriesPriceInRwf : priceInRwf,
+          discount: content.contentType === 'Series' ? `${content.seriesDiscountPercent}%` : '0%',
+          savings: content.contentType === 'Series' ? (content.totalSeriesPriceInRwf || 0) - priceInRwf : 0,
           remainingBalance: updatedUser?.balance || 0
         }
       });
     } catch (error) {
       console.error('Wallet purchase error:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * Purchase individual episode using wallet balance
+   * NEW METHOD for episode purchases
+   */
+  purchaseEpisodeWithWallet = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      if (!req.user) {
+        return next(new AppError('Authentication required', 401));
+      }
+
+      const { contentId, seasonNumber, episodeId } = req.body;
+      
+      if (!contentId || !seasonNumber || !episodeId) {
+        return next(new AppError('Content ID, season number, and episode ID are required', 400));
+      }
+
+      // Find series
+      const series = await Content.findOne({ _id: contentId, contentType: 'Series' });
+      if (!series) {
+        return next(new AppError('Series not found', 404));
+      }
+
+      // Find the specific season and episode
+      const season = series.seasons?.find((s: any) => s.seasonNumber === parseInt(seasonNumber));
+      if (!season) {
+        return next(new AppError('Season not found', 404));
+      }
+
+      const episode = season.episodes.find((e: any) => e._id.toString() === episodeId);
+      if (!episode) {
+        return next(new AppError('Episode not found', 404));
+      }
+
+      // Check if episode is free
+      if (episode.isFree) {
+        return next(new AppError('This episode is free to watch', 400));
+      }
+
+      // Get fresh user data
+      const user = await User.findById(req.user._id);
+      if (!user) {
+        return next(new AppError('User not found', 404));
+      }
+
+      const episodePriceRwf = episode.priceInRwf || 0;
+      const episodePriceCoins = episode.priceInCoins || 0;
+
+      if (episodePriceRwf <= 0) {
+        return next(new AppError('Invalid episode pricing', 400));
+      }
+
+      // Check if user has enough balance
+      if (user.balance < episodePriceRwf) {
+        return next(new AppError(
+          `Insufficient balance. You need ${episodePriceRwf} RWF but have ${user.balance} RWF.`, 
+          400
+        ));
+      }
+
+      // Check if already purchased the full series
+      const hasFullSeries = user.purchasedContent?.some(
+        (pc: any) => pc.contentId?.toString() === contentId
+      );
+      
+      if (hasFullSeries) {
+        return next(new AppError('You have already purchased the full series', 400));
+      }
+
+      // Check if already purchased this episode
+      const alreadyPurchased = user.purchasedEpisodes?.some(
+        (pe: any) => pe.episodeId?.toString() === episodeId
+      );
+      
+      if (alreadyPurchased) {
+        return next(new AppError('You have already purchased this episode', 400));
+      }
+
+      // Update user: deduct balance and add purchased episode
+      const updatedUser = await User.findByIdAndUpdate(
+        user._id,
+        { 
+          $inc: { balance: -episodePriceRwf },
+          $push: {
+            purchasedEpisodes: {
+              contentId: contentId,
+              episodeId: episodeId,
+              purchaseDate: new Date(),
+              price: episodePriceRwf,
+              currency: 'RWF'
+            },
+            transactions: {
+              type: 'purchase',
+              amount: -episodePriceRwf,
+              description: `Purchased ${series.title} - S${seasonNumber}E${episode.episodeNumber}: ${episode.title}`,
+              createdAt: new Date()
+            }
+          }
+        },
+        { new: true }
+      );
+
+      // Create purchase record
+      const transactionRef = `WALLET-EP-${Date.now()}`;
+      await this.paymentRepository.createPurchaseRecord(
+        String(user._id),
+        contentId,
+        'Episode',  // This is the contentType, not purchaseType
+        episodePriceRwf,
+        episodePriceCoins,
+        'wallet',
+        transactionRef,
+        transactionRef,
+        'completed',
+        'content',  // CHANGED from 'episode' to 'content'
+        { 
+          purchaseDate: new Date(),
+          episodeId: episodeId,
+          seasonNumber: seasonNumber,
+          episodeNumber: episode.episodeNumber,
+          episodeTitle: episode.title,
+          isEpisodePurchase: true  // ADDED flag to distinguish
+        }
+      );
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Episode purchased successfully',
+        data: {
+          episode: {
+            _id: episode._id,
+            title: episode.title,
+            episodeNumber: episode.episodeNumber,
+            seasonNumber: seasonNumber
+          },
+          series: {
+            _id: series._id,
+            title: series.title
+          },
+          pricePaid: episodePriceRwf,
+          remainingBalance: updatedUser?.balance || 0
+        }
+      });
+    } catch (error) {
+      console.error('Episode purchase error:', error);
       next(error);
     }
   };
@@ -292,12 +510,36 @@ export class PaymentController {
                 purchase.userId.toString(),
                 purchase.amountPaid
               );
-            } else {
-              // Add coins to user for content purchase
-              await this.paymentRepository.addCoinsToUser(
-                purchase.userId.toString(),
-                purchase.coinAmount
+            } else if (purchase.purchaseType === 'content' && purchase.contentId) {
+              // FIX: Add content to user's purchasedContent
+              await User.findByIdAndUpdate(
+                purchase.userId,
+                {
+                  $push: {
+                    purchasedContent: {
+                      contentId: purchase.contentId,
+                      purchaseDate: new Date(),
+                      price: purchase.amountPaid,
+                      currency: 'RWF'
+                    },
+                    transactions: {
+                      type: 'purchase',
+                      amount: -purchase.amountPaid,
+                      description: `Purchased content via Flutterwave`,
+                      reference: tx_ref,
+                      createdAt: new Date()
+                    }
+                  }
+                }
               );
+              
+              // Also add coins if applicable
+              if (purchase.coinAmount > 0) {
+                await this.paymentRepository.addCoinsToUser(
+                  purchase.userId.toString(),
+                  purchase.coinAmount
+                );
+              }
             }
             
             // Redirect to success page
@@ -350,12 +592,36 @@ export class PaymentController {
               purchase.userId.toString(),
               purchase.amountPaid
             );
-          } else {
-            // Add coins to user for content purchase
-            await this.paymentRepository.addCoinsToUser(
-              purchase.userId.toString(),
-              purchase.coinAmount
+          } else if (purchase.purchaseType === 'content' && purchase.contentId) {
+            // FIX: Add content to user's purchasedContent
+            await User.findByIdAndUpdate(
+              purchase.userId,
+              {
+                $push: {
+                  purchasedContent: {
+                    contentId: purchase.contentId,
+                    purchaseDate: new Date(),
+                    price: purchase.amountPaid,
+                    currency: 'RWF'
+                  },
+                  transactions: {
+                    type: 'purchase',
+                    amount: -purchase.amountPaid,
+                    description: `Purchased content via Flutterwave webhook`,
+                    reference: txRef,
+                    createdAt: new Date()
+                  }
+                }
+              }
             );
+            
+            // Also add coins if applicable
+            if (purchase.coinAmount > 0) {
+              await this.paymentRepository.addCoinsToUser(
+                purchase.userId.toString(),
+                purchase.coinAmount
+              );
+            }
           }
         }
       }
@@ -396,62 +662,6 @@ export class PaymentController {
       });
     } catch (error) {
       next(error);
-    }
-  };
-
-  /**
-   * Add purchased content to user's library after successful payment
-   */
-  private addContentToUserLibrary = async (userId: string, contentId: string, price: number) => {
-    try {
-      await User.findByIdAndUpdate(
-        userId,
-        {
-          $push: {
-            purchasedContent: {
-              contentId: new mongoose.Types.ObjectId(contentId),
-              purchaseDate: new Date(),
-              price: price,
-              currency: 'RWF'
-            }
-          }
-        }
-      );
-      console.log(`Added content ${contentId} to user ${userId}'s library`);
-    } catch (error) {
-      console.error('Error adding content to user library:', error);
-      throw error;
-    }
-  };
-
-  /**
-   * Add purchased episode to user's library
-   */
-  private addEpisodeToUserLibrary = async (
-    userId: string, 
-    contentId: string, 
-    episodeId: string, 
-    price: number
-  ) => {
-    try {
-      await User.findByIdAndUpdate(
-        userId,
-        {
-          $push: {
-            purchasedEpisodes: {
-              contentId: new mongoose.Types.ObjectId(contentId),
-              episodeId: new mongoose.Types.ObjectId(episodeId),
-              purchaseDate: new Date(),
-              price: price,
-              currency: 'RWF'
-            }
-          }
-        }
-      );
-      console.log(`Added episode ${episodeId} from content ${contentId} to user ${userId}'s library`);
-    } catch (error) {
-      console.error('Error adding episode to user library:', error);
-      throw error;
     }
   };
 }

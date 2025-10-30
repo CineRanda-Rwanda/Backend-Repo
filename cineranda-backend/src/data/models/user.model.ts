@@ -48,10 +48,9 @@ export interface IUser extends Document {
     price: number;
     currency: string;
   }>;
-  // ADD THIS NEW FIELD for individual episode purchases
   purchasedEpisodes?: Array<{
-    contentId: mongoose.Types.ObjectId;  // The series ID
-    episodeId: mongoose.Types.ObjectId;  // The specific episode ID
+    contentId: mongoose.Types.ObjectId;
+    episodeId: mongoose.Types.ObjectId;
     purchaseDate: Date;
     price: number;
     currency: string;
@@ -75,6 +74,7 @@ export interface IUser extends Document {
   }>;
   comparePassword(candidatePassword: string): Promise<boolean>;
   comparePin(candidatePin: string): Promise<boolean>;
+  addCoins(amount: number, type: string, description?: string): Promise<IUser>;
 }
 
 // User schema
@@ -143,7 +143,7 @@ const userSchema = new Schema<IUser>(
     },
     watchHistory: [
       {
-        contentId: { type: mongoose.Types.ObjectId, required: true },
+        contentId: { type: mongoose.Types.ObjectId, ref: 'Content', required: true },
         progress: { type: Number, required: true },
         lastWatched: { type: Date, required: true },
         watchTime: { type: Number, required: true },
@@ -151,21 +151,20 @@ const userSchema = new Schema<IUser>(
     ],
     purchasedContent: [
       {
-        contentId: { type: mongoose.Types.ObjectId, required: true },
-        purchaseDate: { type: Date, required: true },
+        contentId: { type: mongoose.Types.ObjectId, ref: 'Content', required: true },
+        purchaseDate: { type: Date, required: true, default: Date.now },
         expiryDate: { type: Date },
         price: { type: Number, required: true },
-        currency: { type: String, required: true },
+        currency: { type: String, required: true, default: 'RWF' },
       },
     ],
-    // ADD THIS NEW FIELD to the schema
     purchasedEpisodes: [
       {
-        contentId: { type: mongoose.Types.ObjectId, required: true },
+        contentId: { type: mongoose.Types.ObjectId, ref: 'Content', required: true },
         episodeId: { type: mongoose.Types.ObjectId, required: true },
-        purchaseDate: { type: Date, required: true },
+        purchaseDate: { type: Date, required: true, default: Date.now },
         price: { type: Number, required: true },
-        currency: { type: String, required: true },
+        currency: { type: String, required: true, default: 'RWF' },
       },
     ],
     preferredLanguage: {
@@ -210,7 +209,6 @@ const userSchema = new Schema<IUser>(
       type: Date,
       select: false,
     },
-    // --- ADDED 2FA FIELDS TO SCHEMA ---
     isTwoFactorEnabled: {
       type: Boolean,
       default: false,
@@ -219,14 +217,13 @@ const userSchema = new Schema<IUser>(
       type: String,
       select: false,
     },
-    // --- ADDED PHONE VERIFICATION FIELDS TO SCHEMA ---
     pendingVerification: {
       type: Boolean,
       default: true,
     },
     verificationCode: {
       type: String,
-      select: false, // Hide from query results
+      select: false,
     },
     verificationCodeExpires: {
       type: Date,
@@ -236,10 +233,10 @@ const userSchema = new Schema<IUser>(
       type: Boolean,
       default: false,
     },
-    // --- ADDED BALANCE AND TRANSACTIONS FIELDS TO SCHEMA ---
     balance: {
       type: Number,
       default: 0,
+      min: 0,
     },
     transactions: [
       {
@@ -265,6 +262,14 @@ const userSchema = new Schema<IUser>(
     timestamps: true,
   }
 );
+
+// ADDED: Indexes for better query performance
+userSchema.index({ username: 1 });
+userSchema.index({ email: 1 });
+userSchema.index({ phoneNumber: 1 });
+userSchema.index({ 'purchasedContent.contentId': 1 });
+userSchema.index({ 'purchasedEpisodes.episodeId': 1 });
+userSchema.index({ 'purchasedEpisodes.contentId': 1 });
 
 // Password hashing middleware
 userSchema.pre<IUser>('save', async function (next) {
@@ -301,12 +306,10 @@ userSchema.methods.comparePassword = async function (
 userSchema.methods.comparePin = async function (
   candidatePin: string
 ): Promise<boolean> {
-  // Use bcryptjs instead of bcrypt to match registration
-  const bcryptjs = require('bcryptjs');
-  return await bcryptjs.compare(candidatePin, this.pin);
+  return await bcrypt.compare(candidatePin, this.pin);
 };
 
-// Add a method to add coins to wallet
+// Add a method to add coins to wallet (KEPT for backward compatibility)
 userSchema.methods.addCoins = async function (
   amount: number,
   type: string,

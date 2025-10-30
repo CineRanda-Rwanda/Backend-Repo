@@ -13,6 +13,9 @@ router.get('/wallet/balance', authenticate, paymentController.getWalletBalance);
 router.post('/content/purchase', authenticate, paymentController.initiateContentPurchase);
 router.post('/content/purchase/wallet', authenticate, paymentController.purchaseContentWithWallet);
 
+// Episode purchase route
+router.post('/episode/purchase/wallet', authenticate, paymentController.purchaseEpisodeWithWallet);
+
 // Purchase history
 router.get('/history', authenticate, paymentController.getUserPurchases);
 

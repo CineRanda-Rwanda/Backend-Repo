@@ -162,6 +162,12 @@ export class ContentController {
         // Series specific - handle seasons
         console.log('⭐ PROCESSING SERIES - START ⭐');
         try {
+          // ✅ ADDED: Handle series discount percentage
+          if (req.body.seriesDiscountPercent) {
+            content.seriesDiscountPercent = parseFloat(req.body.seriesDiscountPercent);
+            console.log(`Series discount set to: ${content.seriesDiscountPercent}%`);
+          }
+          
           if (req.body.seasons) {
             console.log('Seasons data received:', req.body.seasons);
             console.log('Seasons data type:', typeof req.body.seasons);
