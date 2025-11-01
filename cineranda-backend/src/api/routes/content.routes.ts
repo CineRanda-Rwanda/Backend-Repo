@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { ContentController } from '../controllers/content.controller';
 import { authenticate, authorize } from '../../middleware/auth.middleware';
+import { checkContentAccess, checkEpisodeAccess } from '../../middleware/contentAccess.middleware';
 import { upload } from '../../middleware/upload.middleware';
 
 const router = Router();
@@ -18,6 +19,11 @@ router.get('/movies/category/:categoryId', contentController.getMoviesByCategory
 // Protected route - THIS MUST COME BEFORE /movies/:id
 router.get('/unlocked', authenticate, contentController.getUnlockedContent);
 
+// Series specific routes (MUST come before parameterized routes)
+router.get('/series/:contentId/seasons/:seasonNumber', contentController.getSeasonDetails);
+router.get('/series/:contentId/episodes/:episodeId', contentController.getEpisodeDetails);
+router.get('/series/:contentId', contentController.getSeriesDetails);
+
 // This parameterized route comes LAST among /movies/ routes
 router.get('/movies/:id', contentController.getMovieDetails);
 
@@ -29,6 +35,16 @@ router.get(
   authenticate,
   authorize(['admin']),
   contentController.getAllContent
+);
+
+// Access check and watch routes (specific before parameterized)
+router.get('/:contentId/access', authenticate, contentController.checkUserAccess);
+router.get('/:contentId/watch', authenticate, checkContentAccess, contentController.getWatchContent);
+router.get(
+  '/series/:contentId/episodes/:episodeId/watch',
+  authenticate,
+  checkEpisodeAccess,
+  contentController.getWatchEpisode
 );
 
 // GET /api/v1/content/:id - Get a single piece of content (Admin only)
@@ -57,6 +73,14 @@ router.post(
   authorize(['admin']),
   contentUpload,
   contentController.createContent
+);
+
+// Add season (admin only) - SPECIFIC before parameterized
+router.post(
+  '/:contentId/seasons',
+  authenticate,
+  authorize(['admin']),
+  contentController.addSeason
 );
 
 // PATCH /api/v1/content/:id - Update existing content (Admin only)

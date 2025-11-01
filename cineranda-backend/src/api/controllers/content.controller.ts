@@ -1217,4 +1217,481 @@ export class ContentController {
       next(error);
     }
   };
+
+  /**
+   * Get single series with full details and user access info
+   * GET /api/v1/content/series/:contentId
+   */
+  getSeriesDetails = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { contentId } = req.params;
+
+      console.log(`Fetching series details for ID: ${contentId}`);
+
+      const series = await Content.findOne({ 
+        _id: contentId, 
+        contentType: 'Series' 
+      })
+        .populate('genres')
+        .populate('categories');
+
+      if (!series) {
+        return next(new AppError('Series not found', 404));
+      }
+
+      console.log(`Found series: ${series.title}`);
+
+      // If user is authenticated, check their access
+      let userAccess = {
+        isPurchased: false,
+        unlockedEpisodes: [] as string[]
+      };
+
+      const authReq = req as AuthRequest;
+      if (authReq.user) {
+        const User = require('../../data/models/user.model').User;
+        const user = await User.findById(authReq.user._id);
+        
+        if (user) {
+          // Check if full series purchased
+          const hasFullSeries = user.purchasedContent?.some(
+            (pc: any) => pc.contentId.toString() === contentId
+          );
+
+          // Get purchased episode IDs for this series
+          const purchasedEpisodeIds = user.purchasedEpisodes
+            ?.filter((pe: any) => pe.contentId.toString() === contentId)
+            .map((pe: any) => pe.episodeId.toString()) || [];
+
+          userAccess = {
+            isPurchased: hasFullSeries,
+            unlockedEpisodes: hasFullSeries ? ['all'] : purchasedEpisodeIds
+          };
+
+          console.log(`User access - Full series: ${hasFullSeries}, Episodes: ${purchasedEpisodeIds.length}`);
+        }
+      }
+
+      // Add unlock status to episodes
+      const seriesData = series.toObject();
+      if (seriesData.seasons && Array.isArray(seriesData.seasons)) {
+        seriesData.seasons = seriesData.seasons.map((season: any) => ({
+          ...season,
+          episodes: season.episodes.map((ep: any) => ({
+            ...ep,
+            isUnlocked: userAccess.isPurchased || 
+                       ep.isFree || 
+                       userAccess.unlockedEpisodes.includes(ep._id.toString())
+          }))
+        }));
+      }
+
+      res.status(200).json({
+        status: 'success',
+        data: {
+          series: {
+            ...seriesData,
+            userAccess
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching series details:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * Get single season with episodes and unlock status
+   * GET /api/v1/content/series/:contentId/seasons/:seasonNumber
+   */
+  getSeasonDetails = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { contentId, seasonNumber } = req.params;
+
+      console.log(`Fetching season ${seasonNumber} for series: ${contentId}`);
+
+      const series = await Content.findOne({ 
+        _id: contentId, 
+        contentType: 'Series' 
+      });
+
+      if (!series) {
+        return next(new AppError('Series not found', 404));
+      }
+
+      const season = series.seasons?.find(
+        (s: any) => s.seasonNumber === parseInt(seasonNumber)
+      );
+
+      if (!season) {
+        return next(new AppError(`Season ${seasonNumber} not found`, 404));
+      }
+
+      // Check user access
+      let userAccess = {
+        isPurchased: false,
+        unlockedEpisodes: [] as string[]
+      };
+
+      const authReq = req as AuthRequest;
+      if (authReq.user) {
+        const User = require('../../data/models/user.model').User;
+        const user = await User.findById(authReq.user._id);
+        
+        if (user) {
+          const hasFullSeries = user.purchasedContent?.some(
+            (pc: any) => pc.contentId.toString() === contentId
+          );
+
+          const purchasedEpisodeIds = user.purchasedEpisodes
+            ?.filter((pe: any) => pe.contentId.toString() === contentId)
+            .map((pe: any) => pe.episodeId.toString()) || [];
+
+          userAccess = {
+            isPurchased: hasFullSeries,
+            unlockedEpisodes: hasFullSeries ? ['all'] : purchasedEpisodeIds
+          };
+        }
+      }
+
+      // Convert season to plain object and add unlock status
+      const seasonData = JSON.parse(JSON.stringify(season));
+      seasonData.episodes = seasonData.episodes.map((ep: any) => ({
+        ...ep,
+        isUnlocked: userAccess.isPurchased || 
+                   ep.isFree || 
+                   userAccess.unlockedEpisodes.includes(ep._id.toString())
+      }));
+
+      res.status(200).json({
+        status: 'success',
+        data: {
+          series: {
+            _id: series._id,
+            title: series.title,
+            posterImageUrl: series.posterImageUrl
+          },
+          season: {
+            ...seasonData,
+            userAccess
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching season details:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * Get single episode details with unlock status
+   * GET /api/v1/content/series/:contentId/episodes/:episodeId
+   */
+  getEpisodeDetails = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { contentId, episodeId } = req.params;
+
+      console.log(`Fetching episode ${episodeId} for series: ${contentId}`);
+
+      const series = await Content.findOne({ 
+        _id: contentId, 
+        contentType: 'Series' 
+      });
+
+      if (!series) {
+        return next(new AppError('Series not found', 404));
+      }
+
+      // Find episode across all seasons
+      let episode: any = null;
+      let seasonNumber: number = 0;
+
+      for (const season of series.seasons || []) {
+        const foundEpisode = season.episodes.find(
+          (ep: any) => ep._id.toString() === episodeId
+        );
+        if (foundEpisode) {
+          episode = foundEpisode;
+          seasonNumber = season.seasonNumber;
+          break;
+        }
+      }
+
+      if (!episode) {
+        return next(new AppError('Episode not found', 404));
+      }
+
+      // Check user access
+      let isUnlocked = episode.isFree;
+
+      const authReq = req as AuthRequest;
+      if (authReq.user && !isUnlocked) {
+        const User = require('../../data/models/user.model').User;
+        const user = await User.findById(authReq.user._id);
+        
+        if (user) {
+          const hasFullSeries = user.purchasedContent?.some(
+            (pc: any) => pc.contentId.toString() === contentId
+          );
+
+          const hasPurchasedEpisode = user.purchasedEpisodes?.some(
+            (pe: any) => pe.episodeId.toString() === episodeId
+          );
+
+          isUnlocked = hasFullSeries || hasPurchasedEpisode;
+        }
+      }
+
+      // Convert episode to plain object
+      const episodeData = JSON.parse(JSON.stringify(episode));
+
+      res.status(200).json({
+        status: 'success',
+        data: {
+          series: {
+            _id: series._id,
+            title: series.title,
+            posterImageUrl: series.posterImageUrl
+          },
+          seasonNumber,
+          episode: {
+            ...episodeData,
+            isUnlocked
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching episode details:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * Check user's access to specific content (movie or series)
+   * GET /api/v1/content/:contentId/access
+   */
+  checkUserAccess = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { contentId } = req.params;
+
+      const authReq = req as AuthRequest;
+      if (!authReq.user) {
+        return res.status(200).json({
+          status: 'success',
+          data: {
+            hasAccess: false,
+            accessType: 'none',
+            message: 'Please login to check access'
+          }
+        });
+      }
+
+      console.log(`Checking access for user ${authReq.user._id} to content ${contentId}`);
+
+      const User = require('../../data/models/user.model').User;
+      const user = await User.findById(authReq.user._id);
+      
+      if (!user) {
+        return next(new AppError('User not found', 404));
+      }
+
+      const content = await Content.findById(contentId);
+      if (!content) {
+        return next(new AppError('Content not found', 404));
+      }
+
+      // Check full content purchase
+      const hasFullAccess = user.purchasedContent?.some(
+        (pc: any) => pc.contentId.toString() === contentId
+      );
+
+      if (content.contentType === 'Movie') {
+        res.status(200).json({
+          status: 'success',
+          data: {
+            hasAccess: hasFullAccess,
+            accessType: hasFullAccess ? 'full' : 'none',
+            contentType: 'Movie'
+          }
+        });
+      } else {
+        // For series, check episode-level access
+        const purchasedEpisodeIds = user.purchasedEpisodes
+          ?.filter((pe: any) => pe.contentId.toString() === contentId)
+          .map((pe: any) => pe.episodeId.toString()) || [];
+
+        const totalEpisodes = content.seasons?.reduce(
+          (total: number, s: any) => total + s.episodes.length,
+          0
+        ) || 0;
+
+        const freeEpisodes = content.seasons?.reduce(
+          (total: number, s: any) => {
+            return total + s.episodes.filter((ep: any) => ep.isFree).length;
+          },
+          0
+        ) || 0;
+
+        console.log(`Series access - Full: ${hasFullAccess}, Episodes: ${purchasedEpisodeIds.length}, Free: ${freeEpisodes}`);
+
+        res.status(200).json({
+          status: 'success',
+          data: {
+            hasAccess: hasFullAccess || purchasedEpisodeIds.length > 0 || freeEpisodes > 0,
+            accessType: hasFullAccess ? 'full' : (purchasedEpisodeIds.length > 0 ? 'partial' : 'free'),
+            contentType: 'Series',
+            unlockedEpisodes: hasFullAccess ? totalEpisodes : purchasedEpisodeIds.length + freeEpisodes,
+            totalEpisodes,
+            freeEpisodes,
+            purchasedEpisodeIds: hasFullAccess ? [] : purchasedEpisodeIds,
+            totalSeasons: content.seasons?.length || 0
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Error checking user access:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * Get video URL for watching movie (protected - requires purchase)
+   * GET /api/v1/content/:contentId/watch
+   */
+  getWatchContent = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const content = (req as any).content; // Set by middleware
+
+      if (!content) {
+        return next(new AppError('Content not found', 404));
+      }
+
+      if (content.contentType === 'Movie') {
+        res.status(200).json({
+          status: 'success',
+          data: {
+            contentId: content._id,
+            title: content.title,
+            description: content.description,
+            contentType: 'Movie',
+            videoUrl: content.movieFileUrl,
+            subtitles: content.subtitles,
+            duration: content.duration,
+            posterImageUrl: content.posterImageUrl
+          }
+        });
+      } else {
+        return next(new AppError('Use episode watch endpoint for series', 400));
+      }
+    } catch (error) {
+      console.error('Error getting watch content:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * Get episode video URL for watching (protected - requires purchase)
+   * GET /api/v1/content/series/:contentId/episodes/:episodeId/watch
+   */
+  getWatchEpisode = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const episode = (req as any).episode; // Set by middleware
+      const series = (req as any).series; // Set by middleware
+      const seasonNumber = (req as any).seasonNumber; // Set by middleware
+
+      if (!episode || !series) {
+        return next(new AppError('Episode not found', 404));
+      }
+
+      res.status(200).json({
+        status: 'success',
+        data: {
+          seriesId: series._id,
+          seriesTitle: series.title,
+          seasonNumber,
+          episode: {
+            _id: episode._id,
+            episodeNumber: episode.episodeNumber,
+            title: episode.title,
+            description: episode.description,
+            videoUrl: episode.videoUrl,
+            subtitles: episode.subtitles,
+            duration: episode.duration,
+            thumbnailUrl: episode.thumbnailUrl,
+            isFree: episode.isFree
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Error getting watch episode:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * Add new season to existing series
+   * POST /api/v1/content/:contentId/seasons
+   */
+  addSeason = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { contentId } = req.params;
+      const { seasonNumber, seasonTitle } = req.body;
+
+      console.log(`Adding season ${seasonNumber} to series: ${contentId}`);
+
+      // Find series
+      const series = await Content.findOne({ 
+        _id: contentId, 
+        contentType: 'Series' 
+      });
+
+      if (!series) {
+        return next(new AppError('Series not found', 404));
+      }
+
+      // Check if season number already exists
+      const existingSeason = series.seasons?.find(
+        (s: any) => s.seasonNumber === parseInt(seasonNumber)
+      );
+
+      if (existingSeason) {
+        return next(
+          new AppError(`Season ${seasonNumber} already exists`, 400)
+        );
+      }
+
+      // Add new season
+      const newSeason = {
+        seasonNumber: parseInt(seasonNumber),
+        seasonTitle: seasonTitle || `Season ${seasonNumber}`,
+        episodes: [],
+      };
+
+      if (!series.seasons) {
+        series.seasons = [];
+      }
+
+      series.seasons.push(newSeason as any);
+
+      // Save series
+      await series.save();
+
+      const addedSeason = series.seasons[series.seasons.length - 1];
+
+      console.log(`✅ Season ${seasonNumber} added successfully`);
+
+      res.status(201).json({
+        status: 'success',
+        message: 'Season added successfully',
+        data: {
+          season: addedSeason,
+          totalSeasons: series.seasons.length,
+        },
+      });
+    } catch (error) {
+      console.error('Error adding season:', error);
+      next(error);
+    }
+  };
 }
