@@ -1694,4 +1694,83 @@ export class ContentController {
       next(error);
     }
   };
+
+  /**
+   * Get all series with basic info (Public endpoint)
+   * GET /api/v1/content/series
+   */
+  getAllSeries = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 10;
+      const skip = (page - 1) * limit;
+
+      console.log(`Fetching all series - Page ${page}, Limit ${limit}`);
+
+      // Get all published series
+      const series = await Content.find({ 
+        contentType: 'Series',
+        isPublished: true 
+      })
+        .select('title description posterImageUrl releaseYear totalSeriesPriceInRwf discountedSeriesPriceInRwf seriesDiscountPercent seasons')
+        .populate('genres', 'name')
+        .populate('categories', 'name')
+        .skip(skip)
+        .limit(limit)
+        .sort({ createdAt: -1 });
+
+      const total = await Content.countDocuments({ 
+        contentType: 'Series',
+        isPublished: true 
+      });
+
+      // Add episode count to each series
+      const seriesWithCounts = series.map((s: any) => {
+        const seriesData = s.toObject();
+        const totalEpisodes = s.seasons?.reduce(
+          (total: number, season: any) => total + season.episodes.length,
+          0
+        ) || 0;
+
+        const totalSeasons = s.seasons?.length || 0;
+
+        // Remove full episode details for performance
+        const seasonsInfo = s.seasons?.map((season: any) => ({
+          seasonNumber: season.seasonNumber,
+          seasonTitle: season.seasonTitle,
+          episodeCount: season.episodes.length
+        })) || [];
+
+        return {
+          _id: seriesData._id,
+          title: seriesData.title,
+          description: seriesData.description,
+          posterImageUrl: seriesData.posterImageUrl,
+          releaseYear: seriesData.releaseYear,
+          totalSeriesPriceInRwf: seriesData.totalSeriesPriceInRwf,
+          discountedSeriesPriceInRwf: seriesData.discountedSeriesPriceInRwf,
+          seriesDiscountPercent: seriesData.seriesDiscountPercent,
+          genres: seriesData.genres,
+          categories: seriesData.categories,
+          totalSeasons,
+          totalEpisodes,
+          seasons: seasonsInfo
+        };
+      });
+
+      res.status(200).json({
+        status: 'success',
+        results: series.length,
+        total,
+        page,
+        totalPages: Math.ceil(total / limit),
+        data: {
+          series: seriesWithCounts
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching series:', error);
+      next(error);
+    }
+  };
 }

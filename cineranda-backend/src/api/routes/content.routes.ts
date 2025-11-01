@@ -9,6 +9,9 @@ const contentController = new ContentController();
 
 // --- CRITICAL: Place specific routes BEFORE parameterized routes ---
 
+// ✅ ADD THIS NEW LINE HERE
+router.get('/series', contentController.getAllSeries);
+
 // Public content routes (specific routes first)
 router.get('/movies', contentController.getMovies);
 router.get('/movies/search', contentController.searchMovies);
