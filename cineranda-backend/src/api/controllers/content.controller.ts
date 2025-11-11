@@ -23,6 +23,89 @@ export class ContentController {
     this.watchHistoryRepository = new WatchHistoryRepository();
   }
 
+  /**
+   * HELPER: Sign all S3 URLs in a content object
+   * This preserves all existing data and only adds signed URLs
+   */
+  private async signContentUrls(content: any): Promise<any> {
+    const signedContent = { ...content };
+
+    try {
+      // Sign poster image (24 hours)
+      if (signedContent.posterImageUrl) {
+        signedContent.posterImageUrl = await this.s3Service.getSignedUrl(
+          signedContent.posterImageUrl,
+          86400
+        );
+      }
+
+      // Sign movie file URL if it's a movie (2 hours)
+      if (signedContent.contentType === 'Movie' && signedContent.movieFileUrl) {
+        signedContent.movieFileUrl = await this.s3Service.getSignedUrl(
+          signedContent.movieFileUrl,
+          7200
+        );
+      }
+
+      // Sign movie subtitles (24 hours)
+      if (signedContent.subtitles) {
+        signedContent.subtitles = await this.s3Service.signSubtitles(
+          signedContent.subtitles,
+          86400
+        );
+      }
+
+      // Sign series episodes (videos, thumbnails, subtitles)
+      if (signedContent.contentType === 'Series' && signedContent.seasons) {
+        for (const season of signedContent.seasons) {
+          if (season.episodes) {
+            for (const episode of season.episodes) {
+              // Sign episode video (2 hours)
+              if (episode.videoUrl) {
+                episode.videoUrl = await this.s3Service.getSignedUrl(
+                  episode.videoUrl,
+                  7200
+                );
+              }
+
+              // Sign episode thumbnail (24 hours)
+              if (episode.thumbnailUrl) {
+                episode.thumbnailUrl = await this.s3Service.getSignedUrl(
+                  episode.thumbnailUrl,
+                  86400
+                );
+              }
+
+              // Sign episode subtitles (24 hours)
+              if (episode.subtitles) {
+                episode.subtitles = await this.s3Service.signSubtitles(
+                  episode.subtitles,
+                  86400
+                );
+              }
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error signing content URLs:', error);
+    }
+
+    return signedContent;
+  }
+
+  /**
+   * HELPER: Sign URLs for an array of content
+   */
+  private async signContentArray(contentArray: any[]): Promise<any[]> {
+    return Promise.all(
+      contentArray.map(async (item) => {
+        const obj = item.toObject ? item.toObject() : item;
+        return this.signContentUrls(obj);
+      })
+    );
+  }
+
   createContent = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const files = req.files as { [fieldname: string]: Express.Multer.File[] } || {};
@@ -212,11 +295,13 @@ export class ContentController {
       // Save content
       const newContent = await Content.create(content);
       
+      // Sign URLs before returning
+      const contentObj = newContent.toObject();
+      const signedContent = await this.signContentUrls(contentObj);
+      
       res.status(201).json({
         status: 'success',
-        data: {
-          content: newContent,
-        },
+        data: { content: signedContent }
       });
     } catch (error) {
       console.error('Error creating content:', error);
@@ -259,12 +344,18 @@ export class ContentController {
         runValidators: true,
       });
 
+      // Sign URLs before returning
+      if (!updatedContent) {
+        return next(new AppError('Failed to update content', 500));
+      }
+
+      const contentObj = updatedContent.toObject();
+      const signedContent = await this.signContentUrls(contentObj);
+
       res.status(200).json({
         status: 'success',
         message: 'Content updated successfully.',
-        data: {
-          content: updatedContent,
-        },
+        data: { content: signedContent }
       });
     } catch (error) {
       next(error);
@@ -321,17 +412,19 @@ export class ContentController {
    */
   getAllContent = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      // Basic Pagination
       const page = parseInt(req.query.page as string, 10) || 1;
       const limit = parseInt(req.query.limit as string, 10) || 10;
       const skip = (page - 1) * limit;
 
       const content = await Content.find()
-        .sort({ createdAt: -1 }) // Show newest first
+        .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit);
       
       const totalContent = await Content.countDocuments();
+
+      // Sign all URLs
+      const signedContent = await this.signContentArray(content);
 
       res.status(200).json({
         status: 'success',
@@ -341,9 +434,7 @@ export class ContentController {
           totalPages: Math.ceil(totalContent / limit),
           totalContent,
         },
-        data: {
-          content,
-        },
+        data: { content: signedContent }
       });
     } catch (error) {
       next(error);
@@ -351,7 +442,8 @@ export class ContentController {
   };
 
   /**
-   * Get a single piece of content by its ID.
+   * Get single content by ID (UPDATED: Returns signed URLs)
+   * GET /api/v1/content/:id
    */
   getContent = async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -361,116 +453,12 @@ export class ContentController {
         return next(new AppError('No content found with that ID', 404));
       }
 
+      const contentObj = content.toObject();
+      const signedContent = await this.signContentUrls(contentObj);
+
       res.status(200).json({
         status: 'success',
-        data: {
-          content,
-        },
-      });
-    } catch (error) {
-      next(error);
-    }
-  };
-
-  addEpisode = async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      console.log('⭐ ADD EPISODE - START ⭐');
-      const { contentId, seasonId } = req.params;
-      console.log(`Content ID: ${contentId}, Season ID: ${seasonId}`);
-      
-      const files = req.files as { [fieldname: string]: Express.Multer.File[] } || {};
-      console.log('Files received:', Object.keys(files));
-      
-      // 1. Find the series content
-      console.log('Finding content...');
-      const series = await Content.findById(contentId);
-      if (!series) {
-        console.log('No content found with that ID');
-        return next(new AppError('No content found with that ID', 404));
-      }
-      if (series.contentType !== 'Series') {
-        return next(new AppError('Content must be a Series to add episodes', 400));
-      }
-
-      // 2. Make sure seasons exist
-      if (!series.seasons || !Array.isArray(series.seasons)) {
-        return next(new AppError('Series has no seasons array defined', 400));
-      }
-
-      // 3. Find the season
-      const seasonIndex = series.seasons.findIndex(
-        (season: any) => season._id.toString() === seasonId
-      );
-      if (seasonIndex === -1) {
-        return next(new AppError('No season found with that ID', 404));
-      }
-
-      // 4. Validate required episode video
-      if (!files.episodeVideo?.[0]) {
-        return next(new AppError('Episode video is required', 400));
-      }
-
-      // 5. Upload episode video to S3
-      const videoUrl = await this.s3Service.uploadFile(
-        files.episodeVideo[0],
-        'episodes'
-      );
-
-      // 6. Upload subtitle files if provided
-      const subtitles: { en?: string; fr?: string; kin?: string } = {};
-      if (files.subtitleEn?.[0]) {
-        subtitles.en = await this.s3Service.uploadFile(files.subtitleEn[0], 'subtitles');
-      }
-      if (files.subtitleFr?.[0]) {
-        subtitles.fr = await this.s3Service.uploadFile(files.subtitleFr[0], 'subtitles');
-      }
-      if (files.subtitleKin?.[0]) {
-        subtitles.kin = await this.s3Service.uploadFile(files.subtitleKin[0], 'subtitles');
-      }
-
-      // Parse episode-specific cast if provided
-      let episodeCast = [];
-      if (req.body.episodeCast) {
-        try {
-          episodeCast = typeof req.body.episodeCast === 'string' 
-            ? (req.body.episodeCast.startsWith('[') 
-                ? JSON.parse(req.body.episodeCast) 
-                : req.body.episodeCast.split(',').map((c: string) => c.trim()))
-            : req.body.episodeCast;
-        } catch (e) {
-          console.log('Error parsing episode cast:', e);
-          episodeCast = [req.body.episodeCast]; // Fallback to single value
-        }
-      }
-
-      // 7. Create new episode object
-      const newEpisode = {
-        episodeNumber: parseInt(req.body.episodeNumber, 10),
-        title: req.body.title,
-        description: req.body.description,
-        videoUrl,
-        trailerYoutubeLink: req.body.trailerYoutubeLink,
-        priceInRwf: req.body.priceInRwf ? parseInt(req.body.priceInRwf, 10) : undefined,
-        priceInCoins: req.body.priceInCoins ? parseInt(req.body.priceInCoins, 10) : undefined,
-        duration: req.body.duration ? parseInt(req.body.duration, 10) : undefined,
-        isFree: req.body.isFree === 'true',
-        subtitles: Object.keys(subtitles).length > 0 ? subtitles : undefined,
-        // Add episode-specific cast if provided
-        cast: episodeCast.length > 0 ? episodeCast : undefined
-      };
-
-      // 8. Add to season and save
-      series.seasons[seasonIndex].episodes.push(newEpisode as any);
-      await series.save();
-
-      // 9. Get the newly created episode
-      const createdEpisode = series.seasons[seasonIndex].episodes.slice(-1)[0];
-
-      res.status(201).json({
-        status: 'success',
-        data: {
-          episode: createdEpisode,
-        },
+        data: { content: signedContent }
       });
     } catch (error) {
       next(error);
@@ -478,263 +466,17 @@ export class ContentController {
   };
 
   /**
-   * Updates an existing episode within a season
+   * Get all movies with pagination (UPDATED: Returns signed URLs)
+   * GET /api/v1/content/movies
    */
-  updateEpisode = async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const { contentId, seasonId, episodeId } = req.params;
-      const files = req.files as { [fieldname: string]: Express.Multer.File[] } || {};
-      
-      console.log('⭐ UPDATE EPISODE - REQUEST ⭐');
-      console.log(`Content ID: ${contentId}, Season ID: ${seasonId}, Episode ID: ${episodeId}`);
-      console.log('Files received:', Object.keys(files));
-      
-      // 1. First find the current state to determine what needs updating
-      const content = await Content.findById(contentId);
-      if (!content || content.contentType !== 'Series') {
-        return next(new AppError('Content not found or not a series', 404));
-      }
-      
-      // 2. Find the season and episode
-      const season = content.seasons?.find((s: any) => s._id.toString() === seasonId);
-      if (!season) {
-        return next(new AppError('Season not found', 404));
-      }
-      
-      const episode = season.episodes?.find((e: any) => e._id.toString() === episodeId);
-      if (!episode) {
-        return next(new AppError('Episode not found', 404));
-      }
-      
-      console.log(`Found episode: ${episode.title} (${episode._id})`);
-      
-      // 3. Prepare updates
-      const updateData: any = {};
-      const arrayUpdates: any = {};
-    
-      // Basic fields
-      if (req.body.title) updateData[`seasons.$[season].episodes.$[episode].title`] = req.body.title;
-      if (req.body.description) updateData[`seasons.$[season].episodes.$[episode].description`] = req.body.description;
-      if (req.body.episodeNumber) updateData[`seasons.$[season].episodes.$[episode].episodeNumber`] = parseInt(req.body.episodeNumber, 10);
-      if (req.body.duration) updateData[`seasons.$[season].episodes.$[episode].duration`] = parseInt(req.body.duration, 10);
-      if (req.body.priceInRwf) updateData[`seasons.$[season].episodes.$[episode].priceInRwf`] = parseInt(req.body.priceInRwf, 10);
-      if (req.body.priceInCoins) updateData[`seasons.$[season].episodes.$[episode].priceInCoins`] = parseInt(req.body.priceInCoins, 10);
-      if (req.body.isFree !== undefined) updateData[`seasons.$[season].episodes.$[episode].isFree`] = req.body.isFree === 'true';
-      if (req.body.trailerYoutubeLink) updateData[`seasons.$[season].episodes.$[episode].trailerYoutubeLink`] = req.body.trailerYoutubeLink;
-    
-      // 4. Handle files (video, subtitles)
-      if (files.episodeVideo?.[0]) {
-        console.log('Updating episode video');
-        // Delete old video if it exists
-        if (episode.videoUrl) {
-          try {
-            await this.s3Service.deleteFile(episode.videoUrl);
-            console.log('Old video file deleted');
-          } catch (err) {
-            console.error('Error deleting old video:', err);
-          }
-        }
-        
-        // Upload new video
-        const videoUrl = await this.s3Service.uploadFile(files.episodeVideo[0], 'episodes');
-        updateData[`seasons.$[season].episodes.$[episode].videoUrl`] = videoUrl;
-        console.log('New video uploaded:', videoUrl);
-      }
-      
-      // 5. Handle subtitles
-      const subtitles = { ...episode.subtitles || {} };
-      let hasSubtitleChanges = false;
-      
-      // English subtitles
-      if (files.subtitleEn?.[0]) {
-        if (subtitles.en) {
-          try {
-            await this.s3Service.deleteFile(subtitles.en);
-          } catch (err) {
-            console.error('Error deleting old English subtitle:', err);
-          }
-        }
-        subtitles.en = await this.s3Service.uploadFile(files.subtitleEn[0], 'subtitles');
-        hasSubtitleChanges = true;
-      }
-      
-      // French subtitles
-      if (files.subtitleFr?.[0]) {
-        if (subtitles.fr) {
-          try {
-            await this.s3Service.deleteFile(subtitles.fr);
-          } catch (err) {
-            console.error('Error deleting old French subtitle:', err);
-          }
-        }
-        subtitles.fr = await this.s3Service.uploadFile(files.subtitleFr[0], 'subtitles');
-        hasSubtitleChanges = true;
-      }
-      
-      // Kinyarwanda subtitles
-      if (files.subtitleKin?.[0]) {
-        if (subtitles.kin) {
-          try {
-            await this.s3Service.deleteFile(subtitles.kin);
-          } catch (err) {
-            console.error('Error deleting old Kinyarwanda subtitle:', err);
-          }
-        }
-        subtitles.kin = await this.s3Service.uploadFile(files.subtitleKin[0], 'subtitles');
-        hasSubtitleChanges = true;
-      }
-      
-      if (hasSubtitleChanges) {
-        updateData[`seasons.$[season].episodes.$[episode].subtitles`] = subtitles;
-      }
-    
-      // 6. Apply update using MongoDB's update operators
-      console.log('Applying updates:', updateData);
-      
-      const updatedContent = await Content.findOneAndUpdate(
-        { _id: contentId },
-        { $set: updateData },
-        { 
-          new: true, // Return updated document
-          arrayFilters: [
-            { 'season._id': seasonId },
-            { 'episode._id': episodeId }
-          ]
-        }
-      );
-      
-      if (!updatedContent) {
-        return next(new AppError('Failed to update episode', 500));
-      }
-      
-      // 7. Find the updated episode to return
-      if (!updatedContent || !updatedContent.seasons) {
-        return next(new AppError('Failed to retrieve updated content', 500));
-      }
-      
-      const updatedSeason = updatedContent.seasons.find((s: any) => s._id.toString() === seasonId);
-      if (!updatedSeason) {
-        return next(new AppError('Failed to retrieve updated season', 500));
-      }
-      
-      const updatedEpisode = updatedSeason.episodes.find((e: any) => e._id.toString() === episodeId);
-      if (!updatedEpisode) {
-        return next(new AppError('Failed to retrieve updated episode', 500));
-      }
-      
-      console.log('✅ Episode successfully updated');
-      
-      res.status(200).json({
-        status: 'success',
-        data: {
-          episode: updatedEpisode
-        }
-      });
-    } catch (error) {
-      console.error('❌ Error updating episode:', error);
-      next(error);
-    }
-  };
-
-  /**
-   * Deletes an episode from a season
-   */
-  deleteEpisode = async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const { contentId, seasonId, episodeId } = req.params;
-      
-      console.log('⭐ DELETE EPISODE - REQUEST ⭐');
-      console.log(`Content ID: ${contentId}, Season ID: ${seasonId}, Episode ID: ${episodeId}`);
-
-      // 1. Find the series content to check if episode exists and get file paths
-      const content = await Content.findById(contentId);
-      if (!content || content.contentType !== 'Series') {
-        return next(new AppError('Content not found or not a series', 404));
-      }
-      
-      // 2. Find the season and episode
-      const season = content.seasons?.find((s: any) => s._id.toString() === seasonId);
-      if (!season) {
-        return next(new AppError('Season not found', 404));
-      }
-      
-      const episode = season.episodes?.find((e: any) => e._id.toString() === episodeId);
-      if (!episode) {
-        return next(new AppError('Episode not found', 404));
-      }
-      
-      console.log(`Found episode to delete: ${episode.title} (${episode._id})`);
-      
-      // 3. Delete associated files from S3
-      try {
-        // Delete video file
-        if (episode.videoUrl) {
-          console.log(`Deleting video: ${episode.videoUrl}`);
-          await this.s3Service.deleteFile(episode.videoUrl);
-        }
-        
-        // Delete subtitles
-        if (episode.subtitles) {
-          if (episode.subtitles.en) {
-            console.log(`Deleting EN subtitle: ${episode.subtitles.en}`);
-            await this.s3Service.deleteFile(episode.subtitles.en);
-          }
-          if (episode.subtitles.fr) {
-            console.log(`Deleting FR subtitle: ${episode.subtitles.fr}`);
-            await this.s3Service.deleteFile(episode.subtitles.fr);
-          }
-          if (episode.subtitles.kin) {
-            console.log(`Deleting KIN subtitle: ${episode.subtitles.kin}`);
-            await this.s3Service.deleteFile(episode.subtitles.kin);
-          }
-        }
-      } catch (fileError) {
-        // Log but don't fail if file deletion fails
-        console.error('Error deleting files:', fileError);
-      }
-      
-      // 4. Delete the episode using MongoDB's $pull operator
-      console.log('Removing episode from database...');
-      
-      const result = await Content.updateOne(
-        { _id: contentId },
-        { $pull: { [`seasons.$[season].episodes`]: { _id: episodeId } } },
-        { 
-          arrayFilters: [{ 'season._id': seasonId }]
-        }
-      );
-      
-      console.log('Update result:', result);
-      
-      if (result.modifiedCount === 0) {
-        return next(new AppError('Failed to delete episode', 500));
-      }
-      
-      console.log('✅ Episode successfully deleted');
-      
-      // 5. Return 204 No Content (with no body)
-      return res.status(204).send();
-    } catch (error) {
-      console.error('❌ Error deleting episode:', error);
-      next(error);
-    }
-  };
-
-  // Get movies with pagination and filters
   getMovies = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      // Build query
       const queryObj = { contentType: 'Movie', isPublished: true };
-      
-      // Parse query parameters
       const page = parseInt(req.query.page as string) || 1;
       const limit = parseInt(req.query.limit as string) || 10;
       const skip = (page - 1) * limit;
       
-      // Get total count for pagination
       const totalMovies = await Content.countDocuments(queryObj);
-      
-      // Get movies with pagination
       const movies = await Content.find(queryObj)
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -743,6 +485,9 @@ export class ContentController {
         .populate('genres')
         .populate('categories');
       
+      // Sign poster URLs
+      const signedMovies = await this.signContentArray(movies);
+
       res.status(200).json({
         status: 'success',
         results: movies.length,
@@ -751,9 +496,7 @@ export class ContentController {
           page,
           pages: Math.ceil(totalMovies / limit)
         },
-        data: {
-          movies
-        }
+        data: { movies: signedMovies }
       });
     } catch (error) {
       console.error('Error fetching movies:', error);
@@ -761,146 +504,43 @@ export class ContentController {
     }
   };
 
-  // Search movies
-  searchMovies = async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const { query } = req.query;
-      
-      if (!query) {
-        return next(new AppError('Search query is required', 400));
-      }
-      
-      console.log(`Searching for movies with query: "${query}"`);
-      
-      // Find movies matching the search query
-      const movies = await Content.find({
-        contentType: 'Movie',
-        $or: [
-          { title: { $regex: query, $options: 'i' } },
-          { description: { $regex: query, $options: 'i' } },
-          { cast: { $in: [new RegExp(query as string, 'i')] } }
-        ]
-      })
-      .select('title description posterImageUrl releaseYear priceInCoins')
-      .populate('genres')
-      .populate('categories');
-      
-      res.status(200).json({
-        status: 'success',
-        results: movies.length,
-        data: {
-          movies
-        }
-      });
-    } catch (error) {
-      console.error('Error searching movies:', error);
-      next(error);
-    }
-  };
-
-  // Get movies by genre
-  getMoviesByGenre = async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const { genreId } = req.params;
-      const page = parseInt(req.query.page as string) || 1;
-      const limit = parseInt(req.query.limit as string) || 10;
-      
-      console.log(`Finding movies for genre ID: ${genreId}`);
-      
-      // Verify genre exists
-      const genre = await this.genreRepository.findById(genreId);
-      if (!genre) {
-        return next(new AppError('Genre not found', 404));
-      }
-      console.log(`Genre found: ${genre.name}`);
-      
-      // Find movies with this genre - use direct DB query instead of repository
-      const skip = (page - 1) * limit;
-      
-      // Get total count for pagination
-      const totalMovies = await Content.countDocuments({ 
-        contentType: 'Movie', 
-        isPublished: true,
-        genres: { $in: [genreId] }
-      });
-      
-      console.log(`Found ${totalMovies} movies matching genre criteria`);
-      
-      // Get movies with pagination
-      const movies = await Content.find({ 
-        contentType: 'Movie',
-        isPublished: true,
-        genres: { $in: [genreId] }
-      })
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .select('title description posterImageUrl releaseYear priceInCoins genres categories')
-        .populate('genres')
-        .populate('categories');
-    
-      res.status(200).json({
-        status: 'success',
-        results: movies.length,
-        pagination: {
-          total: totalMovies,
-          page,
-          pages: Math.ceil(totalMovies / limit),
-          limit
-        },
-        genre: genre.name,
-        data: { movies }
-      });
-    } catch (error) {
-      console.error('Error fetching movies by genre:', error);
-      next(error);
-    }
-  };
-
-  // Get featured movies (for homepage)
-  getFeaturedMovies = async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const limit = parseInt(req.query.limit as string) || 10;
-      const movies = await this.movieRepository.getFeaturedMovies(limit);
-      
-      res.status(200).json({
-        status: 'success',
-        results: movies.length,
-        data: { movies }
-      });
-    } catch (error) {
-      next(error);
-    }
-  };
-
-  // Get movie details with watch progress for authenticated users
+  /**
+   * Get movie details by ID (UPDATED: Returns signed URLs)
+   * GET /api/v1/content/movies/:id
+   */
   getMovieDetails = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { id } = req.params;
       
-      console.log(`Fetching movie details for ID: ${id}`);
-      
-      // Use Content model directly instead of repository
-      const movie = await Content.findOne({
-        _id: id,
-        contentType: 'Movie'
-      })
-      .populate('genres')
-      .populate('categories');
+      const movie = await Content.findOne({ _id: id, contentType: 'Movie' })
+        .populate('genres')
+        .populate('categories');
       
       if (!movie) {
         return next(new AppError('Movie not found', 404));
       }
-      
-      console.log(`Found movie: ${movie.title}`);
-      
-      // Check if user has purchased this movie (optional auth)
+
       let isPurchased = false;
       let watchProgress = null;
       
       const authReq = req as AuthRequest;
       if (authReq.user) {
-        // Get watch history for authenticated users
+        // Admin always has access
+        if (authReq.user.role === 'admin') {
+          isPurchased = true;
+        } else {
+          // Check if user purchased this movie
+          const User = require('../data/models/user.model').User;
+          const user = await User.findById(authReq.user._id);
+          
+          if (user) {
+            isPurchased = user.purchasedContent?.some(
+              (pc: any) => pc.contentId.toString() === id
+            );
+          }
+        }
+
+        // Get watch progress
         const history = await this.watchHistoryRepository.findOne({ 
           user: authReq.user._id, 
           content: id 
@@ -914,11 +554,14 @@ export class ContentController {
           };
         }
       }
-      
+
+      const movieObj = movie.toObject();
+      const signedMovie = await this.signContentUrls(movieObj);
+
       res.status(200).json({
         status: 'success',
         data: { 
-          movie,
+          movie: signedMovie,
           isPurchased,
           watchProgress
         }
@@ -929,22 +572,81 @@ export class ContentController {
     }
   };
 
-  // Get content by type (Movie or Series)
+  /**
+   * Search movies (UPDATED: Returns signed URLs)
+   * GET /api/v1/content/search/movies
+   */
+  searchMovies = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { query } = req.query;
+      
+      if (!query) {
+        return next(new AppError('Search query is required', 400));
+      }
+      
+      const movies = await Content.find({
+        contentType: 'Movie',
+        isPublished: true,
+        $or: [
+          { title: { $regex: query, $options: 'i' } },
+          { description: { $regex: query, $options: 'i' } },
+          { cast: { $in: [new RegExp(query as string, 'i')] } }
+        ]
+      })
+      .select('title description posterImageUrl releaseYear priceInCoins')
+      .populate('genres')
+      .populate('categories');
+      
+      const signedMovies = await this.signContentArray(movies);
+      
+      res.status(200).json({
+        status: 'success',
+        results: movies.length,
+        data: { movies: signedMovies }
+      });
+    } catch (error) {
+      console.error('Error searching movies:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * Get featured movies (UPDATED: Returns signed URLs)
+   * GET /api/v1/content/featured/movies
+   */
+  getFeaturedMovies = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 10;
+      const movies = await this.movieRepository.getFeaturedMovies(limit);
+      
+      const signedMovies = await this.signContentArray(movies);
+      
+      res.status(200).json({
+        status: 'success',
+        results: movies.length,
+        data: { movies: signedMovies }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  /**
+   * Get content by type (Movie or Series) (UPDATED: Returns signed URLs)
+   * GET /api/v1/content/type/:contentType
+   */
   getContentByType = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { contentType } = req.params;
       
-      // Validate content type
       if (!['Movie', 'Series'].includes(contentType)) {
         return next(new AppError('Invalid content type. Must be Movie or Series', 400));
       }
       
-      // Parse query parameters
       const page = parseInt(req.query.page as string) || 1;
       const limit = parseInt(req.query.limit as string) || 10;
       const skip = (page - 1) * limit;
       
-      // Get content by type
       const totalCount = await Content.countDocuments({
         contentType,
         isPublished: true
@@ -957,9 +659,11 @@ export class ContentController {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .select('title description posterImageUrl releaseYear priceInCoins')
+      .select('title description posterImageUrl releaseYear priceInCoins seasons')
       .populate('genres')
       .populate('categories');
+      
+      const signedContent = await this.signContentArray(content);
       
       res.status(200).json({
         status: 'success',
@@ -969,9 +673,7 @@ export class ContentController {
           page,
           pages: Math.ceil(totalCount / limit)
         },
-        data: {
-          content
-        }
+        data: { content: signedContent }
       });
     } catch (error) {
       console.error(`Error fetching ${req.params.contentType}:`, error);
@@ -979,30 +681,82 @@ export class ContentController {
     }
   };
 
-  // Get movies by category
+  /**
+   * Get movies by genre (UPDATED: Returns signed URLs)
+   * GET /api/v1/content/movies/genre/:genreId
+   */
+  getMoviesByGenre = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { genreId } = req.params;
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 10;
+      
+      const genre = await this.genreRepository.findById(genreId);
+      if (!genre) {
+        return next(new AppError('Genre not found', 404));
+      }
+      
+      const skip = (page - 1) * limit;
+      const totalMovies = await Content.countDocuments({ 
+        contentType: 'Movie', 
+        isPublished: true,
+        genres: { $in: [genreId] }
+      });
+      
+      const movies = await Content.find({ 
+        contentType: 'Movie',
+        isPublished: true,
+        genres: { $in: [genreId] }
+      })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .select('title description posterImageUrl releaseYear priceInCoins genres categories')
+        .populate('genres')
+        .populate('categories');
+    
+      const signedMovies = await this.signContentArray(movies);
+
+      res.status(200).json({
+        status: 'success',
+        results: movies.length,
+        pagination: {
+          total: totalMovies,
+          page,
+          pages: Math.ceil(totalMovies / limit),
+          limit
+        },
+        genre: genre.name,
+        data: { movies: signedMovies }
+      });
+    } catch (error) {
+      console.error('Error fetching movies by genre:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * Get movies by category (UPDATED: Returns signed URLs)
+   * GET /api/v1/content/movies/category/:categoryId
+   */
   getMoviesByCategory = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { categoryId } = req.params;
       const page = parseInt(req.query.page as string) || 1;
       const limit = parseInt(req.query.limit as string) || 10;
       
-      // Verify category exists
       const category = await this.categoryRepository.findById(categoryId);
       if (!category) {
         return next(new AppError('Category not found', 404));
       }
       
-      // Find movies with this category
       const skip = (page - 1) * limit;
-      
-      // Get total count for pagination
       const totalMovies = await Content.countDocuments({ 
         contentType: 'Movie', 
         isPublished: true,
         categories: { $in: [categoryId] }
       });
       
-      // Get movies with pagination
       const movies = await Content.find({ 
         contentType: 'Movie',
         isPublished: true,
@@ -1015,6 +769,8 @@ export class ContentController {
         .populate('genres')
         .populate('categories');
     
+      const signedMovies = await this.signContentArray(movies);
+
       res.status(200).json({
         status: 'success',
         results: movies.length,
@@ -1025,7 +781,7 @@ export class ContentController {
           limit
         },
         category: category.name,
-        data: { movies }
+        data: { movies: signedMovies }
       });
     } catch (error) {
       console.error('Error fetching movies by category:', error);
@@ -1033,41 +789,10 @@ export class ContentController {
     }
   };
 
-  // Toggle publish status of content
-  togglePublishStatus = async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const { id } = req.params;
-      const content = await Content.findById(id);
-
-      if (!content) {
-        return next(new AppError('No content found with that ID', 404));
-      }
-
-      // Toggle the published status
-      content.isPublished = !content.isPublished;
-      await content.save();
-
-      const status = content.isPublished ? 'published' : 'unpublished';
-
-      res.status(200).json({
-        status: 'success',
-        message: `Content successfully ${status}`,
-        data: {
-          content: {
-            _id: content._id,
-            title: content.title,
-            contentType: content.contentType,
-            isPublished: content.isPublished
-          }
-        }
-      });
-    } catch (error) {
-      console.error('Error toggling publish status:', error);
-      next(error);
-    }
-  };
-
-  // Get purchased movies for the authenticated user
+  /**
+   * Get purchased movies (UPDATED: Returns signed URLs)
+   * GET /api/v1/content/purchased/movies
+   */
   getPurchasedMovies = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const authReq = req as AuthRequest;
@@ -1075,8 +800,7 @@ export class ContentController {
         return next(new AppError('Authentication required', 401));
       }
 
-      // Get the user with purchased content IDs
-      const User = require('../../data/models/user.model').User;
+      const User = require('../data/models/user.model').User;
       const user = await User.findById(authReq.user._id).select('purchasedContent');
       
       if (!user || !user.purchasedContent) {
@@ -1087,21 +811,17 @@ export class ContentController {
         });
       }
       
-      console.log(`Found ${user.purchasedContent.length} purchased content items for user`);
-      
-      // Parse query parameters
       const page = parseInt(req.query.page as string) || 1;
       const limit = parseInt(req.query.limit as string) || 10;
       const skip = (page - 1) * limit;
       
-      // Find all purchased movies
       const totalMovies = await Content.countDocuments({ 
-        _id: { $in: user.purchasedContent },
+        _id: { $in: user.purchasedContent.map((pc: any) => pc.contentId) },
         contentType: 'Movie'
       });
       
       const movies = await Content.find({ 
-        _id: { $in: user.purchasedContent },
+        _id: { $in: user.purchasedContent.map((pc: any) => pc.contentId) },
         contentType: 'Movie'
       })
         .sort({ createdAt: -1 })
@@ -1111,8 +831,8 @@ export class ContentController {
         .populate('genres')
         .populate('categories');
       
-      console.log(`Found ${movies.length} purchased movies for user`);
-      
+      const signedMovies = await this.signContentArray(movies);
+
       res.status(200).json({
         status: 'success',
         results: movies.length,
@@ -1122,7 +842,7 @@ export class ContentController {
           pages: Math.ceil(totalMovies / limit),
           limit
         },
-        data: { movies }
+        data: { movies: signedMovies }
       });
     } catch (error) {
       console.error('Error fetching purchased movies:', error);
@@ -1131,102 +851,85 @@ export class ContentController {
   };
 
   /**
-   * Get all unlocked content for the authenticated user
-   * Fetches from Purchase collection to find what user has bought
+   * Get all series (UPDATED: Returns signed URLs)
+   * GET /api/v1/content/series
    */
-  getUnlockedContent = async (req: Request, res: Response, next: NextFunction) => {
+  getAllSeries = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const authReq = req as AuthRequest;
-      if (!authReq.user) {
-        return next(new AppError('Authentication required', 401));
-      }
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 10;
+      const skip = (page - 1) * limit;
 
-      console.log(`Fetching unlocked content for user: ${authReq.user._id}`);
-
-      // Import Purchase model
-      const Purchase = require('../../data/models/purchase.model').Purchase;
-
-      // Find all completed purchases for this user
-      const purchases = await Purchase.find({
-        userId: authReq.user._id,
-        status: 'completed',
-        purchaseType: 'content'
-      }).select('contentId');
-
-      console.log(`Found ${purchases.length} purchases for user`);
-
-      // Extract content IDs
-      const purchasedContentIds = purchases
-        .filter((p: any) => p.contentId)
-        .map((p: any) => p.contentId);
-
-      console.log(`Purchased content IDs:`, purchasedContentIds);
-
-      if (purchasedContentIds.length === 0) {
-        return res.status(200).json({
-          status: 'success',
-          results: { movies: 0, series: 0 },
-          data: { movies: [], series: [] }
-        });
-      }
-
-      // Get purchased movies
-      const unlockedMovies = await Content.find({
-        _id: { $in: purchasedContentIds },
-        contentType: 'Movie'
+      const series = await Content.find({ 
+        contentType: 'Series',
+        isPublished: true 
       })
-        .select('title description posterImageUrl releaseYear duration priceInRwf priceInCoins')
-        .populate('genres')
-        .populate('categories')
-        .lean();
+        .select('title description posterImageUrl releaseYear totalSeriesPriceInRwf discountedSeriesPriceInRwf seriesDiscountPercent seasons')
+        .populate('genres', 'name')
+        .populate('categories', 'name')
+        .skip(skip)
+        .limit(limit)
+        .sort({ createdAt: -1 });
 
-      console.log(`Found ${unlockedMovies.length} unlocked movies`);
+      const total = await Content.countDocuments({ 
+        contentType: 'Series',
+        isPublished: true 
+      });
 
-      // Get purchased series
-      const unlockedSeries = await Content.find({
-        _id: { $in: purchasedContentIds },
-        contentType: 'Series'
-      })
-        .populate('genres')
-        .populate('categories')
-        .lean();
+      const signedSeries = await this.signContentArray(series);
 
-      console.log(`Found ${unlockedSeries.length} unlocked series`);
+      const seriesWithCounts = signedSeries.map((s: any) => {
+        const totalEpisodes = s.seasons?.reduce(
+          (total: number, season: any) => total + season.episodes.length,
+          0
+        ) || 0;
 
-      // Mark all series as fully purchased (since user bought the whole series)
-      const markedSeries = unlockedSeries.map((series: any) => ({
-        ...series,
-        isPurchased: true,
-        hasUnlockedEpisodes: true
-      }));
+        const totalSeasons = s.seasons?.length || 0;
+
+        const seasonsInfo = s.seasons?.map((season: any) => ({
+          seasonNumber: season.seasonNumber,
+          seasonTitle: season.seasonTitle,
+          episodeCount: season.episodes.length
+        })) || [];
+
+        return {
+          _id: s._id,
+          title: s.title,
+          description: s.description,
+          posterImageUrl: s.posterImageUrl,
+          releaseYear: s.releaseYear,
+          totalSeriesPriceInRwf: s.totalSeriesPriceInRwf,
+          discountedSeriesPriceInRwf: s.discountedSeriesPriceInRwf,
+          seriesDiscountPercent: s.seriesDiscountPercent,
+          genres: s.genres,
+          categories: s.categories,
+          totalSeasons,
+          totalEpisodes,
+          seasons: seasonsInfo
+        };
+      });
 
       res.status(200).json({
         status: 'success',
-        results: {
-          movies: unlockedMovies.length,
-          series: markedSeries.length
-        },
-        data: {
-          movies: unlockedMovies,
-          series: markedSeries
-        }
+        results: series.length,
+        total,
+        page,
+        totalPages: Math.ceil(total / limit),
+        data: { series: seriesWithCounts }
       });
-
     } catch (error) {
-      console.error('Error fetching unlocked content:', error);
+      console.error('Error fetching series:', error);
       next(error);
     }
   };
 
   /**
-   * Get single series with full details and user access info
+   * Get series details (UPDATED: Returns signed URLs)
    * GET /api/v1/content/series/:contentId
    */
   getSeriesDetails = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { contentId } = req.params;
-
-      console.log(`Fetching series details for ID: ${contentId}`);
 
       const series = await Content.findOne({ 
         _id: contentId, 
@@ -1239,43 +942,57 @@ export class ContentController {
         return next(new AppError('Series not found', 404));
       }
 
-      console.log(`Found series: ${series.title}`);
-
-      // If user is authenticated, check their access
-      let userAccess = {
+      const authReq = req as AuthRequest;
+      const userAccess = {
         isPurchased: false,
         unlockedEpisodes: [] as string[]
       };
 
-      const authReq = req as AuthRequest;
       if (authReq.user) {
-        const User = require('../../data/models/user.model').User;
-        const user = await User.findById(authReq.user._id);
-        
-        if (user) {
-          // Check if full series purchased
-          const hasFullSeries = user.purchasedContent?.some(
-            (pc: any) => pc.contentId.toString() === contentId
-          );
+        // Admin has full access
+        if (authReq.user.role === 'admin') {
+          userAccess.isPurchased = true;
+          // Unlock all episodes for admin
+          if (series.seasons) {
+            for (const season of series.seasons) {
+              for (const episode of season.episodes) {
+                if (episode._id) {
+                  userAccess.unlockedEpisodes.push(episode._id.toString());
+                }
+              }
+            }
+          }
+        } else {
+          const User = require('../data/models/user.model').User;
+          const user = await User.findById(authReq.user._id);
+          
+          if (user) {
+            const seriesPurchase = user.purchasedContent?.find(
+              (pc: any) => pc.contentId.toString() === contentId
+            );
 
-          // Get purchased episode IDs for this series
-          const purchasedEpisodeIds = user.purchasedEpisodes
-            ?.filter((pe: any) => pe.contentId.toString() === contentId)
-            .map((pe: any) => pe.episodeId.toString()) || [];
+            if (seriesPurchase) {
+              userAccess.isPurchased = true;
+              userAccess.unlockedEpisodes = seriesPurchase.episodeIdsAtPurchase || [];
+            }
 
-          userAccess = {
-            isPurchased: hasFullSeries,
-            unlockedEpisodes: hasFullSeries ? ['all'] : purchasedEpisodeIds
-          };
+            const purchasedEpisodeIds = user.purchasedEpisodes
+              ?.filter((pe: any) => pe.contentId.toString() === contentId)
+              .map((pe: any) => pe.episodeId.toString()) || [];
 
-          console.log(`User access - Full series: ${hasFullSeries}, Episodes: ${purchasedEpisodeIds.length}`);
+            userAccess.unlockedEpisodes = [
+              ...userAccess.unlockedEpisodes,
+              ...purchasedEpisodeIds
+            ];
+          }
         }
       }
 
-      // Add unlock status to episodes
       const seriesData = series.toObject();
-      if (seriesData.seasons && Array.isArray(seriesData.seasons)) {
-        seriesData.seasons = seriesData.seasons.map((season: any) => ({
+      const signedSeries = await this.signContentUrls(seriesData);
+
+      if (signedSeries.seasons && Array.isArray(signedSeries.seasons)) {
+        signedSeries.seasons = signedSeries.seasons.map((season: any) => ({
           ...season,
           episodes: season.episodes.map((ep: any) => ({
             ...ep,
@@ -1290,7 +1007,7 @@ export class ContentController {
         status: 'success',
         data: {
           series: {
-            ...seriesData,
+            ...signedSeries,
             userAccess
           }
         }
@@ -1302,14 +1019,12 @@ export class ContentController {
   };
 
   /**
-   * Get single season with episodes and unlock status
+   * Get season details (UPDATED: Returns signed URLs)
    * GET /api/v1/content/series/:contentId/seasons/:seasonNumber
    */
   getSeasonDetails = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { contentId, seasonNumber } = req.params;
-
-      console.log(`Fetching season ${seasonNumber} for series: ${contentId}`);
 
       const series = await Content.findOne({ 
         _id: contentId, 
@@ -1328,41 +1043,60 @@ export class ContentController {
         return next(new AppError(`Season ${seasonNumber} not found`, 404));
       }
 
-      // Check user access
-      let userAccess = {
+      const authReq = req as AuthRequest;
+      const userAccess = {
         isPurchased: false,
         unlockedEpisodes: [] as string[]
       };
 
-      const authReq = req as AuthRequest;
       if (authReq.user) {
-        const User = require('../../data/models/user.model').User;
-        const user = await User.findById(authReq.user._id);
-        
-        if (user) {
-          const hasFullSeries = user.purchasedContent?.some(
-            (pc: any) => pc.contentId.toString() === contentId
-          );
+        // Admin has full access
+        if (authReq.user.role === 'admin') {
+          userAccess.isPurchased = true;
+          userAccess.unlockedEpisodes = season.episodes.map((ep: any) => ep._id.toString());
+        } else {
+          const User = require('../data/models/user.model').User;
+          const user = await User.findById(authReq.user._id);
+          
+          if (user) {
+            const seriesPurchase = user.purchasedContent?.find(
+              (pc: any) => pc.contentId.toString() === contentId
+            );
 
-          const purchasedEpisodeIds = user.purchasedEpisodes
-            ?.filter((pe: any) => pe.contentId.toString() === contentId)
-            .map((pe: any) => pe.episodeId.toString()) || [];
+            if (seriesPurchase) {
+              userAccess.isPurchased = true;
+              userAccess.unlockedEpisodes = seriesPurchase.episodeIdsAtPurchase || [];
+            }
 
-          userAccess = {
-            isPurchased: hasFullSeries,
-            unlockedEpisodes: hasFullSeries ? ['all'] : purchasedEpisodeIds
-          };
+            const purchasedEpisodeIds = user.purchasedEpisodes
+              ?.filter((pe: any) => pe.contentId.toString() === contentId)
+              .map((pe: any) => pe.episodeId.toString()) || [];
+
+            userAccess.unlockedEpisodes = [
+              ...userAccess.unlockedEpisodes,
+              ...purchasedEpisodeIds
+            ];
+          }
         }
       }
 
-      // Convert season to plain object and add unlock status
       const seasonData = JSON.parse(JSON.stringify(season));
-      seasonData.episodes = seasonData.episodes.map((ep: any) => ({
-        ...ep,
-        isUnlocked: userAccess.isPurchased || 
-                   ep.isFree || 
-                   userAccess.unlockedEpisodes.includes(ep._id.toString())
-      }));
+      
+      // Sign episode thumbnails
+      for (const ep of seasonData.episodes) {
+        if (ep.thumbnailUrl) {
+          ep.thumbnailUrl = await this.s3Service.getSignedUrl(ep.thumbnailUrl, 86400);
+        }
+        ep.isUnlocked = userAccess.isPurchased || 
+                       ep.isFree || 
+                       userAccess.unlockedEpisodes.includes(ep._id.toString());
+      }
+
+      // Sign series poster
+      let signedPosterUrl = series.posterImageUrl;
+      if (signedPosterUrl) {
+        signedPosterUrl = await this.s3Service.getSignedUrl(signedPosterUrl, 86400);
+      }
 
       res.status(200).json({
         status: 'success',
@@ -1370,7 +1104,7 @@ export class ContentController {
           series: {
             _id: series._id,
             title: series.title,
-            posterImageUrl: series.posterImageUrl
+            posterImageUrl: signedPosterUrl
           },
           season: {
             ...seasonData,
@@ -1385,14 +1119,12 @@ export class ContentController {
   };
 
   /**
-   * Get single episode details with unlock status
+   * Get episode details (UPDATED: Returns signed URLs)
    * GET /api/v1/content/series/:contentId/episodes/:episodeId
    */
   getEpisodeDetails = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { contentId, episodeId } = req.params;
-
-      console.log(`Fetching episode ${episodeId} for series: ${contentId}`);
 
       const series = await Content.findOne({ 
         _id: contentId, 
@@ -1403,7 +1135,6 @@ export class ContentController {
         return next(new AppError('Series not found', 404));
       }
 
-      // Find episode across all seasons
       let episode: any = null;
       let seasonNumber: number = 0;
 
@@ -1422,29 +1153,43 @@ export class ContentController {
         return next(new AppError('Episode not found', 404));
       }
 
-      // Check user access
       let isUnlocked = episode.isFree;
 
       const authReq = req as AuthRequest;
-      if (authReq.user && !isUnlocked) {
-        const User = require('../../data/models/user.model').User;
-        const user = await User.findById(authReq.user._id);
-        
-        if (user) {
-          const hasFullSeries = user.purchasedContent?.some(
-            (pc: any) => pc.contentId.toString() === contentId
-          );
+      if (authReq.user) {
+        // Admin always has access
+        if (authReq.user.role === 'admin') {
+          isUnlocked = true;
+        } else if (!isUnlocked) {
+          const User = require('../data/models/user.model').User;
+          const user = await User.findById(authReq.user._id);
+          
+          if (user) {
+            const hasFullSeries = user.purchasedContent?.some(
+              (pc: any) => pc.contentId.toString() === contentId
+            );
 
-          const hasPurchasedEpisode = user.purchasedEpisodes?.some(
-            (pe: any) => pe.episodeId.toString() === episodeId
-          );
+            const hasPurchasedEpisode = user.purchasedEpisodes?.some(
+              (pe: any) => pe.episodeId.toString() === episodeId
+            );
 
-          isUnlocked = hasFullSeries || hasPurchasedEpisode;
+            isUnlocked = hasFullSeries || hasPurchasedEpisode;
+          }
         }
       }
 
-      // Convert episode to plain object
       const episodeData = JSON.parse(JSON.stringify(episode));
+
+      // Sign episode thumbnail
+      if (episodeData.thumbnailUrl) {
+        episodeData.thumbnailUrl = await this.s3Service.getSignedUrl(episodeData.thumbnailUrl, 86400);
+      }
+
+      // Sign series poster
+      let signedPosterUrl = series.posterImageUrl;
+      if (signedPosterUrl) {
+        signedPosterUrl = await this.s3Service.getSignedUrl(signedPosterUrl, 86400);
+      }
 
       res.status(200).json({
         status: 'success',
@@ -1452,7 +1197,7 @@ export class ContentController {
           series: {
             _id: series._id,
             title: series.title,
-            posterImageUrl: series.posterImageUrl
+            posterImageUrl: signedPosterUrl
           },
           seasonNumber,
           episode: {
@@ -1556,7 +1301,7 @@ export class ContentController {
   };
 
   /**
-   * Get video URL for watching movie (protected - requires purchase)
+   * Get video URL for watching movie (UPDATED: Returns signed URLs)
    * GET /api/v1/content/:contentId/watch
    */
   getWatchContent = async (req: Request, res: Response, next: NextFunction) => {
@@ -1567,23 +1312,27 @@ export class ContentController {
         return next(new AppError('Content not found', 404));
       }
 
-      if (content.contentType === 'Movie') {
-        res.status(200).json({
-          status: 'success',
-          data: {
-            contentId: content._id,
-            title: content.title,
-            description: content.description,
-            contentType: 'Movie',
-            videoUrl: content.movieFileUrl,
-            subtitles: content.subtitles,
-            duration: content.duration,
-            posterImageUrl: content.posterImageUrl
-          }
-        });
-      } else {
+      if (content.contentType !== 'Movie') {
         return next(new AppError('Use episode watch endpoint for series', 400));
       }
+
+      // Sign all URLs before returning
+      const contentObj = content.toObject();
+      const signedContent = await this.signContentUrls(contentObj);
+
+      res.status(200).json({
+        status: 'success',
+        data: {
+          contentId: signedContent._id,
+          title: signedContent.title,
+          description: signedContent.description,
+          contentType: 'Movie',
+          videoUrl: signedContent.movieFileUrl,
+          subtitles: signedContent.subtitles,
+          duration: signedContent.duration,
+          posterImageUrl: signedContent.posterImageUrl
+        }
+      });
     } catch (error) {
       console.error('Error getting watch content:', error);
       next(error);
@@ -1591,7 +1340,7 @@ export class ContentController {
   };
 
   /**
-   * Get episode video URL for watching (protected - requires purchase)
+   * Get episode video URL for watching (UPDATED: Returns signed URLs)
    * GET /api/v1/content/series/:contentId/episodes/:episodeId/watch
    */
   getWatchEpisode = async (req: Request, res: Response, next: NextFunction) => {
@@ -1604,23 +1353,35 @@ export class ContentController {
         return next(new AppError('Episode not found', 404));
       }
 
+      // Sign episode URLs
+      const episodeObj = JSON.parse(JSON.stringify(episode));
+      
+      if (episodeObj.videoUrl) {
+        episodeObj.videoUrl = await this.s3Service.getSignedUrl(episodeObj.videoUrl, 7200);
+      }
+      
+      if (episodeObj.thumbnailUrl) {
+        episodeObj.thumbnailUrl = await this.s3Service.getSignedUrl(episodeObj.thumbnailUrl, 86400);
+      }
+      
+      if (episodeObj.subtitles) {
+        episodeObj.subtitles = await this.s3Service.signSubtitles(episodeObj.subtitles, 86400);
+      }
+
+      // Sign series poster
+      let signedPosterUrl = series.posterImageUrl;
+      if (signedPosterUrl) {
+        signedPosterUrl = await this.s3Service.getSignedUrl(signedPosterUrl, 86400);
+      }
+
       res.status(200).json({
         status: 'success',
         data: {
           seriesId: series._id,
           seriesTitle: series.title,
+          posterImageUrl: signedPosterUrl,
           seasonNumber,
-          episode: {
-            _id: episode._id,
-            episodeNumber: episode.episodeNumber,
-            title: episode.title,
-            description: episode.description,
-            videoUrl: episode.videoUrl,
-            subtitles: episode.subtitles,
-            duration: episode.duration,
-            thumbnailUrl: episode.thumbnailUrl,
-            isFree: episode.isFree
-          }
+          episode: episodeObj
         }
       });
     } catch (error) {
@@ -1696,81 +1457,423 @@ export class ContentController {
   };
 
   /**
-   * Get all series with basic info (Public endpoint)
-   * GET /api/v1/content/series
+   * Get unlocked content for authenticated user
+   * GET /api/v1/content/unlocked
    */
-  getAllSeries = async (req: Request, res: Response, next: NextFunction) => {
+  getUnlockedContent = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const page = parseInt(req.query.page as string) || 1;
-      const limit = parseInt(req.query.limit as string) || 10;
-      const skip = (page - 1) * limit;
+      const authReq = req as AuthRequest;
+      if (!authReq.user) {
+        return next(new AppError('Authentication required', 401));
+      }
 
-      console.log(`Fetching all series - Page ${page}, Limit ${limit}`);
+      const User = require('../data/models/user.model').User;
+      const user = await User.findById(authReq.user._id).select('purchasedContent purchasedEpisodes');
+      
+      if (!user) {
+        return next(new AppError('User not found', 404));
+      }
 
-      // Get all published series
-      const series = await Content.find({ 
-        contentType: 'Series',
-        isPublished: true 
+      // Get all purchased content IDs
+      const purchasedContentIds = user.purchasedContent?.map((pc: any) => pc.contentId) || [];
+
+      // Fetch all unlocked content
+      const unlockedContent = await Content.find({
+        _id: { $in: purchasedContentIds }
       })
-        .select('title description posterImageUrl releaseYear totalSeriesPriceInRwf discountedSeriesPriceInRwf seriesDiscountPercent seasons')
-        .populate('genres', 'name')
-        .populate('categories', 'name')
-        .skip(skip)
-        .limit(limit)
+        .select('title description posterImageUrl contentType releaseYear genres categories')
+        .populate('genres')
+        .populate('categories')
         .sort({ createdAt: -1 });
 
-      const total = await Content.countDocuments({ 
-        contentType: 'Series',
-        isPublished: true 
-      });
-
-      // Add episode count to each series
-      const seriesWithCounts = series.map((s: any) => {
-        const seriesData = s.toObject();
-        const totalEpisodes = s.seasons?.reduce(
-          (total: number, season: any) => total + season.episodes.length,
-          0
-        ) || 0;
-
-        const totalSeasons = s.seasons?.length || 0;
-
-        // Remove full episode details for performance
-        const seasonsInfo = s.seasons?.map((season: any) => ({
-          seasonNumber: season.seasonNumber,
-          seasonTitle: season.seasonTitle,
-          episodeCount: season.episodes.length
-        })) || [];
-
-        return {
-          _id: seriesData._id,
-          title: seriesData.title,
-          description: seriesData.description,
-          posterImageUrl: seriesData.posterImageUrl,
-          releaseYear: seriesData.releaseYear,
-          totalSeriesPriceInRwf: seriesData.totalSeriesPriceInRwf,
-          discountedSeriesPriceInRwf: seriesData.discountedSeriesPriceInRwf,
-          seriesDiscountPercent: seriesData.seriesDiscountPercent,
-          genres: seriesData.genres,
-          categories: seriesData.categories,
-          totalSeasons,
-          totalEpisodes,
-          seasons: seasonsInfo
-        };
-      });
+      // Sign all URLs using existing helper
+      const signedContent = await this.signContentArray(unlockedContent);
 
       res.status(200).json({
         status: 'success',
-        results: series.length,
-        total,
-        page,
-        totalPages: Math.ceil(total / limit),
+        results: unlockedContent.length,
         data: {
-          series: seriesWithCounts
+          content: signedContent,
+          purchasedEpisodes: user.purchasedEpisodes || []
         }
       });
     } catch (error) {
-      console.error('Error fetching series:', error);
+      console.error('Error fetching unlocked content:', error);
       next(error);
     }
   };
+
+  /**
+   * Add episode to existing season
+   * POST /api/v1/content/:contentId/seasons/:seasonId/episodes
+   */
+  addEpisode = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { contentId, seasonId } = req.params;
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] } || {};
+
+      console.log('⭐ ADD EPISODE - REQUEST');
+      console.log(`Content ID: ${contentId}, Season ID: ${seasonId}`);
+
+      // Validate required fields
+      if (!req.body.episodeNumber || !req.body.title) {
+        return next(new AppError('Episode number and title are required', 400));
+      }
+
+      if (!files.videoFile || !files.videoFile[0]) {
+        return next(new AppError('Episode video file is required', 400));
+      }
+
+      // Find series
+      const series = await Content.findOne({
+        _id: contentId,
+        contentType: 'Series'
+      });
+
+      if (!series) {
+        return next(new AppError('Series not found', 404));
+      }
+
+      // Find season
+      const season = series.seasons?.find((s: any) => s._id.toString() === seasonId);
+      if (!season) {
+        return next(new AppError('Season not found', 404));
+      }
+
+      // Check if episode number already exists
+      const existingEpisode = season.episodes?.find(
+        (e: any) => e.episodeNumber === parseInt(req.body.episodeNumber)
+      );
+
+      if (existingEpisode) {
+        return next(
+          new AppError(`Episode ${req.body.episodeNumber} already exists in this season`, 400)
+        );
+      }
+
+      // Upload video file using existing S3 service
+      const videoUrl = await this.s3Service.uploadFile(files.videoFile[0], 'videos');
+
+      // Upload thumbnail if provided
+      let thumbnailUrl;
+      if (files.thumbnailImage?.[0]) {
+        thumbnailUrl = await this.s3Service.uploadFile(files.thumbnailImage[0], 'thumbnails');
+      }
+
+      // Upload subtitles if provided
+      const subtitles: { en?: string; fr?: string; kin?: string } = {};
+      if (files.subtitleEn?.[0]) {
+        subtitles.en = await this.s3Service.uploadFile(files.subtitleEn[0], 'subtitles');
+      }
+      if (files.subtitleFr?.[0]) {
+        subtitles.fr = await this.s3Service.uploadFile(files.subtitleFr[0], 'subtitles');
+      }
+      if (files.subtitleKin?.[0]) {
+        subtitles.kin = await this.s3Service.uploadFile(files.subtitleKin[0], 'subtitles');
+      }
+
+      // Create new episode object
+      const newEpisode: any = {
+        episodeNumber: parseInt(req.body.episodeNumber),
+        title: req.body.title,
+        description: req.body.description || '',
+        videoUrl,
+        duration: parseInt(req.body.duration) || 0,
+        isFree: req.body.isFree === 'true',
+      };
+
+      // Add optional fields
+      if (thumbnailUrl) newEpisode.thumbnailUrl = thumbnailUrl;
+      if (Object.keys(subtitles).length > 0) newEpisode.subtitles = subtitles;
+      if (req.body.priceInRwf) newEpisode.priceInRwf = parseInt(req.body.priceInRwf);
+      if (req.body.priceInCoins) newEpisode.priceInCoins = parseInt(req.body.priceInCoins);
+
+      // Add episode to season
+      season.episodes.push(newEpisode);
+
+      // Save series
+      await series.save();
+
+      const addedEpisode = season.episodes[season.episodes.length - 1];
+
+      console.log('✅ Episode added successfully');
+
+      res.status(201).json({
+        status: 'success',
+        message: 'Episode added successfully',
+        data: {
+          episode: addedEpisode
+        }
+      });
+    } catch (error) {
+      console.error('Error adding episode:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * Update episode
+   * PATCH /api/v1/content/:contentId/seasons/:seasonId/episodes/:episodeId
+   */
+  updateEpisode = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { contentId, seasonId, episodeId } = req.params;
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] } || {};
+
+      console.log('⭐ UPDATE EPISODE - REQUEST');
+      console.log(`Content: ${contentId}, Season: ${seasonId}, Episode: ${episodeId}`);
+
+      // Find series
+      const series = await Content.findOne({
+        _id: contentId,
+        contentType: 'Series'
+      });
+
+      if (!series) {
+        return next(new AppError('Series not found', 404));
+      }
+
+      // Find season
+      const season = series.seasons?.find((s: any) => s._id.toString() === seasonId);
+      if (!season) {
+        return next(new AppError('Season not found', 404));
+      }
+
+      // Find episode
+      const episode = season.episodes?.find((e: any) => e._id.toString() === episodeId);
+      if (!episode) {
+        return next(new AppError('Episode not found', 404));
+      }
+
+      // Update text fields if provided
+      if (req.body.episodeNumber !== undefined) {
+        const newEpisodeNumber = parseInt(req.body.episodeNumber);
+        // Check if new episode number conflicts with another episode
+        const conflictingEpisode = season.episodes?.find(
+          (e: any) => e.episodeNumber === newEpisodeNumber && e._id.toString() !== episodeId
+        );
+        if (conflictingEpisode) {
+          return next(new AppError(`Episode number ${newEpisodeNumber} already exists in this season`, 400));
+        }
+        episode.episodeNumber = newEpisodeNumber;
+      }
+      if (req.body.title !== undefined) episode.title = req.body.title;
+      if (req.body.description !== undefined) episode.description = req.body.description;
+      if (req.body.duration !== undefined) episode.duration = parseInt(req.body.duration);
+      if (req.body.isFree !== undefined) episode.isFree = req.body.isFree === 'true';
+      if (req.body.priceInRwf !== undefined) episode.priceInRwf = parseInt(req.body.priceInRwf);
+      if (req.body.priceInCoins !== undefined) episode.priceInCoins = parseInt(req.body.priceInCoins);
+
+      // Replace video file if provided
+      if (files.videoFile?.[0]) {
+        // Delete old video from S3
+        if (episode.videoUrl) {
+          try {
+            await this.s3Service.deleteFile(episode.videoUrl);
+          } catch (error) {
+            console.error('Error deleting old video:', error);
+          }
+        }
+        // Upload new video
+        episode.videoUrl = await this.s3Service.uploadFile(files.videoFile[0], 'videos');
+      }
+
+      // Replace thumbnail if provided
+      if (files.thumbnailImage?.[0]) {
+        // Delete old thumbnail from S3
+        if (episode.thumbnailUrl) {
+          try {
+            await this.s3Service.deleteFile(episode.thumbnailUrl);
+          } catch (error) {
+            console.error('Error deleting old thumbnail:', error);
+          }
+        }
+        // Upload new thumbnail
+        episode.thumbnailUrl = await this.s3Service.uploadFile(files.thumbnailImage[0], 'thumbnails');
+      }
+
+      // Update subtitles if provided
+      if (!episode.subtitles) episode.subtitles = {};
+
+      if (files.subtitleEn?.[0]) {
+        if (episode.subtitles.en) {
+          try {
+            await this.s3Service.deleteFile(episode.subtitles.en);
+          } catch (error) {
+            console.error('Error deleting old EN subtitle:', error);
+          }
+        }
+        episode.subtitles.en = await this.s3Service.uploadFile(files.subtitleEn[0], 'subtitles');
+      }
+
+      if (files.subtitleFr?.[0]) {
+        if (episode.subtitles.fr) {
+          try {
+            await this.s3Service.deleteFile(episode.subtitles.fr);
+          } catch (error) {
+            console.error('Error deleting old FR subtitle:', error);
+          }
+        }
+        episode.subtitles.fr = await this.s3Service.uploadFile(files.subtitleFr[0], 'subtitles');
+      }
+
+      if (files.subtitleKin?.[0]) {
+        if (episode.subtitles.kin) {
+          try {
+            await this.s3Service.deleteFile(episode.subtitles.kin);
+          } catch (error) {
+            console.error('Error deleting old KIN subtitle:', error);
+          }
+        }
+        episode.subtitles.kin = await this.s3Service.uploadFile(files.subtitleKin[0], 'subtitles');
+      }
+
+      // Save series
+      await series.save();
+
+      console.log('✅ Episode updated successfully');
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Episode updated successfully',
+        data: {
+          episode
+        }
+      });
+    } catch (error) {
+      console.error('Error updating episode:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * Delete episode
+   * DELETE /api/v1/content/:contentId/seasons/:seasonId/episodes/:episodeId
+   */
+  deleteEpisode = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { contentId, seasonId, episodeId } = req.params;
+
+      console.log('🗑️  DELETE EPISODE - REQUEST');
+      console.log(`Content: ${contentId}, Season: ${seasonId}, Episode: ${episodeId}`);
+
+      // Find series
+      const series = await Content.findOne({
+        _id: contentId,
+        contentType: 'Series'
+      });
+
+      if (!series) {
+        return next(new AppError('Series not found', 404));
+      }
+
+      // Find season
+      const season = series.seasons?.find((s: any) => s._id.toString() === seasonId);
+      if (!season) {
+        return next(new AppError('Season not found', 404));
+      }
+
+      // Find episode index
+      const episodeIndex = season.episodes?.findIndex(
+        (e: any) => e._id.toString() === episodeId
+      );
+
+      if (episodeIndex === -1 || episodeIndex === undefined) {
+        return next(new AppError('Episode not found', 404));
+      }
+
+      const episode = season.episodes[episodeIndex];
+
+      console.log(`Deleting episode: ${episode.title}`);
+
+      // Delete all associated files from S3
+      try {
+        // Delete video
+        if (episode.videoUrl) {
+          console.log(`Deleting video: ${episode.videoUrl}`);
+          await this.s3Service.deleteFile(episode.videoUrl);
+        }
+
+        // Delete thumbnail
+        if (episode.thumbnailUrl) {
+          console.log(`Deleting thumbnail: ${episode.thumbnailUrl}`);
+          await this.s3Service.deleteFile(episode.thumbnailUrl);
+        }
+
+        // Delete subtitles
+        if (episode.subtitles) {
+          if (episode.subtitles.en) {
+            console.log(`Deleting EN subtitle`);
+            await this.s3Service.deleteFile(episode.subtitles.en);
+          }
+          if (episode.subtitles.fr) {
+            console.log(`Deleting FR subtitle`);
+            await this.s3Service.deleteFile(episode.subtitles.fr);
+          }
+          if (episode.subtitles.kin) {
+            console.log(`Deleting KIN subtitle`);
+            await this.s3Service.deleteFile(episode.subtitles.kin);
+          }
+        }
+      } catch (fileError) {
+        console.error('Error deleting S3 files:', fileError);
+        // Continue with database deletion even if file deletion fails
+      }
+
+      // Remove episode from array
+      season.episodes.splice(episodeIndex, 1);
+
+      // Save series
+      await series.save();
+
+      console.log('✅ Episode deleted successfully');
+
+      res.status(204).send();
+    } catch (error) {
+      console.error('Error deleting episode:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * Toggle content publish status
+   * PATCH /api/v1/content/:id/toggle-publish
+   */
+  togglePublishStatus = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+
+      console.log(`📢 TOGGLE PUBLISH STATUS - Content ID: ${id}`);
+
+      const content = await Content.findById(id);
+
+      if (!content) {
+        return next(new AppError('Content not found', 404));
+      }
+
+      // Toggle the publish status
+      const previousStatus = content.isPublished;
+      content.isPublished = !content.isPublished;
+      
+      await content.save();
+
+      console.log(`Status changed: ${previousStatus} → ${content.isPublished}`);
+
+      // Convert to plain object and sign URLs
+      const contentObj = content.toObject();
+      const signedContent = await this.signContentUrls(contentObj);
+
+      res.status(200).json({
+        status: 'success',
+        message: `Content ${content.isPublished ? 'published' : 'unpublished'} successfully`,
+        data: {
+          content: signedContent
+        }
+      });
+    } catch (error) {
+      console.error('Error toggling publish status:', error);
+      next(error);
+    }
+  };
+
 }

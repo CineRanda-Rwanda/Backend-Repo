@@ -1,6 +1,7 @@
 /// <reference types="multer" />
 
-import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import config from '../../config';
 import crypto from 'crypto';
 
@@ -96,5 +97,62 @@ export class S3Service {
         throw new Error(`S3 Deletion Failed: An unknown error occurred.`);
       }
     }
+  }
+
+  /**
+   * Generate a pre-signed URL for temporary access to private S3 objects
+   * @param fileUrl The full S3 URL of the file
+   * @param expiresIn Time in seconds until the URL expires (default: 2 hours)
+   * @returns A signed URL that grants temporary access
+   */
+  async getSignedUrl(fileUrl: string, expiresIn: number = 7200): Promise<string> {
+    try {
+      // Handle empty or invalid URLs
+      if (!fileUrl || typeof fileUrl !== 'string') {
+        console.warn('Invalid fileUrl provided to getSignedUrl');
+        return fileUrl;
+      }
+
+      // If URL doesn't contain s3 or amazonaws, return as-is (might be external)
+      if (!fileUrl.includes('s3') && !fileUrl.includes('amazonaws')) {
+        return fileUrl;
+      }
+
+      // Extract the key from the URL
+      const url = new URL(fileUrl);
+      const key = decodeURIComponent(url.pathname.substring(1)); // Remove leading '/'
+
+      const command = new GetObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+      });
+
+      const signedUrl = await getSignedUrl(this.s3Client, command, { expiresIn });
+      
+      return signedUrl;
+    } catch (error) {
+      console.error('Error generating signed URL:', error);
+      // Return original URL as fallback
+      return fileUrl;
+    }
+  }
+
+  /**
+   * Sign subtitle object URLs
+   */
+  async signSubtitles(subtitles: any, expiresIn: number = 86400): Promise<any> {
+    if (!subtitles || typeof subtitles !== 'object') {
+      return subtitles;
+    }
+    
+    const signed: any = {};
+    
+    for (const [lang, url] of Object.entries(subtitles)) {
+      if (typeof url === 'string' && url) {
+        signed[lang] = await this.getSignedUrl(url, expiresIn);
+      }
+    }
+    
+    return Object.keys(signed).length > 0 ? signed : subtitles;
   }
 }

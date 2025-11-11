@@ -6,6 +6,7 @@ import AppError from '../utils/AppError';
 
 /**
  * Check if user has access to specific content (movie or full series)
+ * UPDATED: Admins bypass purchase checks
  */
 export const checkContentAccess = async (
   req: AuthRequest,
@@ -19,16 +20,23 @@ export const checkContentAccess = async (
 
     const { contentId } = req.params;
 
-    // Get user with purchased content
-    const user = await User.findById(req.user._id);
-    if (!user) {
-      return next(new AppError('User not found', 404));
-    }
-
     // Get content
     const content = await Content.findById(contentId);
     if (!content) {
       return next(new AppError('Content not found', 404));
+    }
+
+    // **ADMIN BYPASS**: Admins can watch everything
+    if (req.user.role === 'admin') {
+      console.log('🔓 Admin access granted - bypassing purchase checks');
+      (req as any).content = content;
+      return next();
+    }
+
+    // Get user with purchased content
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return next(new AppError('User not found', 404));
     }
 
     // Check if user has purchased this content
@@ -50,6 +58,7 @@ export const checkContentAccess = async (
 
 /**
  * Check if user has access to specific episode
+ * UPDATED: Admins bypass purchase checks
  */
 export const checkEpisodeAccess = async (
   req: AuthRequest,
@@ -62,12 +71,6 @@ export const checkEpisodeAccess = async (
     }
 
     const { contentId, episodeId } = req.params;
-
-    // Get user with purchased content
-    const user = await User.findById(req.user._id);
-    if (!user) {
-      return next(new AppError('User not found', 404));
-    }
 
     // Get series
     const series = await Content.findOne({ _id: contentId, contentType: 'Series' });
@@ -94,12 +97,27 @@ export const checkEpisodeAccess = async (
       return next(new AppError('Episode not found', 404));
     }
 
+    // **ADMIN BYPASS**: Admins can watch everything
+    if (req.user.role === 'admin') {
+      console.log('🔓 Admin access granted - bypassing purchase checks');
+      (req as any).episode = episode;
+      (req as any).series = series;
+      (req as any).seasonNumber = seasonNumber;
+      return next();
+    }
+
     // Check if episode is free
     if (episode.isFree) {
       (req as any).episode = episode;
       (req as any).series = series;
       (req as any).seasonNumber = seasonNumber;
       return next();
+    }
+
+    // Get user with purchased content
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return next(new AppError('User not found', 404));
     }
 
     // Check if user purchased the full series
