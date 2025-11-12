@@ -481,10 +481,10 @@ export class ContentController {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .select('title description posterImageUrl releaseYear priceInCoins genres categories')
+        .select('title description posterImageUrl releaseYear priceInRwf priceInCoins genres categories') // ✅ ADDED priceInRwf
         .populate('genres')
         .populate('categories');
-      
+    
       // Sign poster URLs
       const signedMovies = await this.signContentArray(movies);
 
@@ -593,7 +593,7 @@ export class ContentController {
           { cast: { $in: [new RegExp(query as string, 'i')] } }
         ]
       })
-      .select('title description posterImageUrl releaseYear priceInCoins')
+      .select('title description posterImageUrl releaseYear priceInRwf priceInCoins') // ✅ Added priceInRwf
       .populate('genres')
       .populate('categories');
       
@@ -659,7 +659,7 @@ export class ContentController {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .select('title description posterImageUrl releaseYear priceInCoins seasons')
+      .select('title description posterImageUrl releaseYear priceInRwf priceInCoins seasons') // ✅ Added priceInRwf
       .populate('genres')
       .populate('categories');
       
@@ -711,7 +711,7 @@ export class ContentController {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .select('title description posterImageUrl releaseYear priceInCoins genres categories')
+        .select('title description posterImageUrl releaseYear priceInRwf priceInCoins genres categories') // ✅ Added priceInRwf
         .populate('genres')
         .populate('categories');
     
@@ -765,7 +765,7 @@ export class ContentController {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .select('title description posterImageUrl releaseYear priceInCoins genres categories')
+        .select('title description posterImageUrl releaseYear priceInRwf priceInCoins genres categories') // ✅ Added priceInRwf
         .populate('genres')
         .populate('categories');
     
