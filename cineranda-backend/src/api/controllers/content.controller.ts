@@ -1512,17 +1512,53 @@ export class ContentController {
       const { contentId, seasonId } = req.params;
       const files = req.files as { [fieldname: string]: Express.Multer.File[] } || {};
 
-      console.log('⭐ ADD EPISODE - REQUEST');
-      console.log(`Content ID: ${contentId}, Season ID: ${seasonId}`);
+      // ✅ DETAILED DEBUG LOGGING
+      console.log('\n' + '='.repeat(60));
+      console.log('⭐ ADD EPISODE - DETAILED DEBUG');
+      console.log('='.repeat(60));
+      console.log('Content ID:', contentId);
+      console.log('Season ID:', seasonId);
+      console.log('Request body:', JSON.stringify(req.body, null, 2));
+      console.log('Files object keys:', Object.keys(files));
+      console.log('Files object:', JSON.stringify(
+        Object.keys(files).reduce((acc, key) => {
+          acc[key] = files[key]?.map(f => ({
+            fieldname: f.fieldname,
+            originalname: f.originalname,
+            mimetype: f.mimetype,
+            size: f.size
+          }));
+          return acc;
+        }, {} as any),
+        null,
+        2
+      ));
+      console.log('='.repeat(60) + '\n');
 
       // Validate required fields
       if (!req.body.episodeNumber || !req.body.title) {
         return next(new AppError('Episode number and title are required', 400));
       }
 
+      // ✅ IMPROVED: Check with detailed error
       if (!files.videoFile || !files.videoFile[0]) {
-        return next(new AppError('Episode video file is required', 400));
+        console.error('❌ VIDEO FILE NOT FOUND!');
+        console.error('Available file fields:', Object.keys(files));
+        
+        // Return detailed error for debugging
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Episode video file is required',
+          debug: {
+            receivedFields: Object.keys(files),
+            expectedField: 'videoFile',
+            bodyFields: Object.keys(req.body),
+            hint: 'Make sure the form field name is exactly "videoFile" (case-sensitive)'
+          }
+        });
       }
+
+      console.log('✅ Video file found:', files.videoFile[0].originalname);
 
       // Find series
       const series = await Content.findOne({
@@ -1551,24 +1587,33 @@ export class ContentController {
         );
       }
 
+      console.log('🔄 Uploading video to S3...');
+
       // Upload video file using existing S3 service
       const videoUrl = await this.s3Service.uploadFile(files.videoFile[0], 'videos');
+
+      console.log('✅ Video uploaded:', videoUrl);
 
       // Upload thumbnail if provided
       let thumbnailUrl;
       if (files.thumbnailImage?.[0]) {
+        console.log('🔄 Uploading thumbnail...');
         thumbnailUrl = await this.s3Service.uploadFile(files.thumbnailImage[0], 'thumbnails');
+        console.log('✅ Thumbnail uploaded:', thumbnailUrl);
       }
 
       // Upload subtitles if provided
       const subtitles: { en?: string; fr?: string; kin?: string } = {};
       if (files.subtitleEn?.[0]) {
+        console.log('🔄 Uploading EN subtitle...');
         subtitles.en = await this.s3Service.uploadFile(files.subtitleEn[0], 'subtitles');
       }
       if (files.subtitleFr?.[0]) {
+        console.log('🔄 Uploading FR subtitle...');
         subtitles.fr = await this.s3Service.uploadFile(files.subtitleFr[0], 'subtitles');
       }
       if (files.subtitleKin?.[0]) {
+        console.log('🔄 Uploading KIN subtitle...');
         subtitles.kin = await this.s3Service.uploadFile(files.subtitleKin[0], 'subtitles');
       }
 
@@ -1596,7 +1641,7 @@ export class ContentController {
 
       const addedEpisode = season.episodes[season.episodes.length - 1];
 
-      console.log('✅ Episode added successfully');
+      console.log('✅ Episode added successfully\n');
 
       res.status(201).json({
         status: 'success',
@@ -1606,7 +1651,7 @@ export class ContentController {
         }
       });
     } catch (error) {
-      console.error('Error adding episode:', error);
+      console.error('❌ Error adding episode:', error);
       next(error);
     }
   };

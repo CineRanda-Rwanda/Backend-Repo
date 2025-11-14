@@ -1,13 +1,11 @@
 import multer from 'multer';
 import AppError from '../utils/AppError';
 
-// Configure multer to use memory storage, as we are not saving files to the server's disk.
+// Configure multer to use memory storage
 const storage = multer.memoryStorage();
 
-// Optional: Filter files to allow only specific types.
+// File filter - allow images, videos, and subtitles
 const fileFilter = (req: any, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
-  // For now, we allow common video, image, and subtitle formats.
-  // You can make this more restrictive if needed.
   if (
     file.mimetype.startsWith('image') ||
     file.mimetype.startsWith('video') ||
@@ -23,4 +21,18 @@ const fileFilter = (req: any, file: Express.Multer.File, cb: multer.FileFilterCa
 export const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024 * 1024, // 5GB limit
+  },
 });
+
+// ✅ Export the fields middleware
+export const uploadContentFiles = upload.fields([
+  { name: 'posterImage', maxCount: 1 },
+  { name: 'movieFile', maxCount: 1 },
+  { name: 'videoFile', maxCount: 1 },        // For episodes
+  { name: 'thumbnailImage', maxCount: 1 },   // For episodes
+  { name: 'subtitleEn', maxCount: 1 },
+  { name: 'subtitleFr', maxCount: 1 },
+  { name: 'subtitleKin', maxCount: 1 },
+]);
