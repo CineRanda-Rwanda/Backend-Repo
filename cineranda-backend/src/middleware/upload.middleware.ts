@@ -35,4 +35,4 @@ export const uploadContentFiles = upload.fields([
   { name: 'subtitleEn', maxCount: 1 },
   { name: 'subtitleFr', maxCount: 1 },
   { name: 'subtitleKin', maxCount: 1 },
-]);
+]); 

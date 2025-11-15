@@ -13,6 +13,7 @@ export interface IEpisode {
   priceInCoins: number;
   duration: number; // in minutes
   isFree: boolean;
+  isPublished?: boolean;     // ✅ ADD THIS LINE
   subtitles?: {
     en?: string;
     fr?: string;
@@ -145,6 +146,10 @@ const EpisodeSchema = new Schema<IEpisode>({
   isFree: { 
     type: Boolean, 
     default: false 
+  },
+  isPublished: {              // ✅ ADD THIS FIELD
+    type: Boolean,
+    default: true             // Default to published
   },
   subtitles: SubtitleSchema,
   releaseDate: {

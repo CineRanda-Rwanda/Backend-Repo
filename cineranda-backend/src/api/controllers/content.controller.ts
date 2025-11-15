@@ -1632,6 +1632,8 @@ export class ContentController {
       if (Object.keys(subtitles).length > 0) newEpisode.subtitles = subtitles;
       if (req.body.priceInRwf) newEpisode.priceInRwf = parseInt(req.body.priceInRwf);
       if (req.body.priceInCoins) newEpisode.priceInCoins = parseInt(req.body.priceInCoins);
+      if (req.body.trailerYoutubeLink) newEpisode.trailerYoutubeLink = req.body.trailerYoutubeLink;  // ✅ ADD THIS LINE
+      if (req.body.isPublished !== undefined) newEpisode.isPublished = req.body.isPublished === 'true';  // ✅ ADD THIS LINE
 
       // Add episode to season
       season.episodes.push(newEpisode);
@@ -1643,11 +1645,26 @@ export class ContentController {
 
       console.log('✅ Episode added successfully\n');
 
+      // ✅ Sign episode URLs before returning
+      const episodeObj = JSON.parse(JSON.stringify(addedEpisode));
+      
+      if (episodeObj.videoUrl) {
+        episodeObj.videoUrl = await this.s3Service.getSignedUrl(episodeObj.videoUrl, 7200); // 2 hours
+      }
+      
+      if (episodeObj.thumbnailUrl) {
+        episodeObj.thumbnailUrl = await this.s3Service.getSignedUrl(episodeObj.thumbnailUrl, 86400); // 24 hours
+      }
+      
+      if (episodeObj.subtitles) {
+        episodeObj.subtitles = await this.s3Service.signSubtitles(episodeObj.subtitles, 86400); // 24 hours
+      }
+
       res.status(201).json({
         status: 'success',
         message: 'Episode added successfully',
         data: {
-          episode: addedEpisode
+          episode: episodeObj  // ✅ Return signed episode
         }
       });
     } catch (error) {
@@ -1657,7 +1674,7 @@ export class ContentController {
   };
 
   /**
-   * Update episode
+   * Update episode in a season
    * PATCH /api/v1/content/:contentId/seasons/:seasonId/episodes/:episodeId
    */
   updateEpisode = async (req: Request, res: Response, next: NextFunction) => {
@@ -1665,8 +1682,12 @@ export class ContentController {
       const { contentId, seasonId, episodeId } = req.params;
       const files = req.files as { [fieldname: string]: Express.Multer.File[] } || {};
 
-      console.log('⭐ UPDATE EPISODE - REQUEST');
-      console.log(`Content: ${contentId}, Season: ${seasonId}, Episode: ${episodeId}`);
+      console.log('\n' + '='.repeat(60));
+      console.log('🔄 UPDATE EPISODE - DEBUG');
+      console.log('='.repeat(60));
+      console.log('📥 Request body:', JSON.stringify(req.body, null, 2));
+      console.log('📁 Files:', Object.keys(files));
+      console.log('='.repeat(60) + '\n');
 
       // Find series
       const series = await Content.findOne({
@@ -1690,103 +1711,104 @@ export class ContentController {
         return next(new AppError('Episode not found', 404));
       }
 
-      // Update text fields if provided
-      if (req.body.episodeNumber !== undefined) {
-        const newEpisodeNumber = parseInt(req.body.episodeNumber);
-        // Check if new episode number conflicts with another episode
-        const conflictingEpisode = season.episodes?.find(
-          (e: any) => e.episodeNumber === newEpisodeNumber && e._id.toString() !== episodeId
-        );
-        if (conflictingEpisode) {
-          return next(new AppError(`Episode number ${newEpisodeNumber} already exists in this season`, 400));
-        }
-        episode.episodeNumber = newEpisodeNumber;
-      }
+      console.log('📝 BEFORE UPDATE:');
+      console.log('  - trailerYoutubeLink:', episode.trailerYoutubeLink);
+      console.log('  - isPublished:', episode.isPublished);
+
+      // Update basic fields
       if (req.body.title !== undefined) episode.title = req.body.title;
       if (req.body.description !== undefined) episode.description = req.body.description;
       if (req.body.duration !== undefined) episode.duration = parseInt(req.body.duration);
       if (req.body.isFree !== undefined) episode.isFree = req.body.isFree === 'true';
       if (req.body.priceInRwf !== undefined) episode.priceInRwf = parseInt(req.body.priceInRwf);
       if (req.body.priceInCoins !== undefined) episode.priceInCoins = parseInt(req.body.priceInCoins);
-
-      // Replace video file if provided
-      if (files.videoFile?.[0]) {
-        // Delete old video from S3
-        if (episode.videoUrl) {
-          try {
-            await this.s3Service.deleteFile(episode.videoUrl);
-          } catch (error) {
-            console.error('Error deleting old video:', error);
-          }
-        }
-        // Upload new video
-        episode.videoUrl = await this.s3Service.uploadFile(files.videoFile[0], 'videos');
+      if (req.body.trailerYoutubeLink !== undefined) {
+        episode.trailerYoutubeLink = req.body.trailerYoutubeLink;
+        console.log('✅ Setting trailerYoutubeLink to:', req.body.trailerYoutubeLink);
+      }
+      if (req.body.isPublished !== undefined) {
+        episode.isPublished = req.body.isPublished === 'true';
+        console.log('✅ Setting isPublished to:', req.body.isPublished === 'true');
       }
 
-      // Replace thumbnail if provided
-      if (files.thumbnailImage?.[0]) {
-        // Delete old thumbnail from S3
-        if (episode.thumbnailUrl) {
-          try {
-            await this.s3Service.deleteFile(episode.thumbnailUrl);
-          } catch (error) {
-            console.error('Error deleting old thumbnail:', error);
-          }
-        }
-        // Upload new thumbnail
-        episode.thumbnailUrl = await this.s3Service.uploadFile(files.thumbnailImage[0], 'thumbnails');
+      console.log('📝 AFTER UPDATE:');
+      console.log('  - trailerYoutubeLink:', episode.trailerYoutubeLink);
+      console.log('  - isPublished:', episode.isPublished);
+
+      // Handle video file update
+      if (files.videoFile && files.videoFile[0]) {
+        console.log('🔄 Uploading new video...');
+        const videoUrl = await this.s3Service.uploadFile(files.videoFile[0], 'videos');
+        episode.videoUrl = videoUrl;
+        console.log('✅ New video uploaded:', videoUrl);
       }
 
-      // Update subtitles if provided
-      if (!episode.subtitles) episode.subtitles = {};
+      // Handle thumbnail update
+      if (files.thumbnailImage && files.thumbnailImage[0]) {
+        console.log('🔄 Uploading new thumbnail...');
+        const thumbnailUrl = await this.s3Service.uploadFile(files.thumbnailImage[0], 'thumbnails');
+        episode.thumbnailUrl = thumbnailUrl;
+        console.log('✅ New thumbnail uploaded:', thumbnailUrl);
+      }
 
-      if (files.subtitleEn?.[0]) {
-        if (episode.subtitles.en) {
-          try {
-            await this.s3Service.deleteFile(episode.subtitles.en);
-          } catch (error) {
-            console.error('Error deleting old EN subtitle:', error);
-          }
-        }
+      // Handle subtitle updates
+      if (files.subtitleEn && files.subtitleEn[0]) {
+        if (!episode.subtitles) episode.subtitles = {};
         episode.subtitles.en = await this.s3Service.uploadFile(files.subtitleEn[0], 'subtitles');
       }
-
-      if (files.subtitleFr?.[0]) {
-        if (episode.subtitles.fr) {
-          try {
-            await this.s3Service.deleteFile(episode.subtitles.fr);
-          } catch (error) {
-            console.error('Error deleting old FR subtitle:', error);
-          }
-        }
+      if (files.subtitleFr && files.subtitleFr[0]) {
+        if (!episode.subtitles) episode.subtitles = {};
         episode.subtitles.fr = await this.s3Service.uploadFile(files.subtitleFr[0], 'subtitles');
       }
-
-      if (files.subtitleKin?.[0]) {
-        if (episode.subtitles.kin) {
-          try {
-            await this.s3Service.deleteFile(episode.subtitles.kin);
-          } catch (error) {
-            console.error('Error deleting old KIN subtitle:', error);
-          }
-        }
+      if (files.subtitleKin && files.subtitleKin[0]) {
+        if (!episode.subtitles) episode.subtitles = {};
         episode.subtitles.kin = await this.s3Service.uploadFile(files.subtitleKin[0], 'subtitles');
       }
 
       // Save series
       await series.save();
 
-      console.log('✅ Episode updated successfully');
+      console.log('💾 SAVED TO DATABASE');
+      console.log('  - trailerYoutubeLink:', episode.trailerYoutubeLink);
+      console.log('  - isPublished:', episode.isPublished);
+
+      // Sign episode URLs before returning
+      const episodeObj = JSON.parse(JSON.stringify(episode));
+    
+      console.log('📦 BEFORE JSON.stringify/parse:');
+      console.log('  - episode.trailerYoutubeLink:', episode.trailerYoutubeLink);
+      console.log('  - episode.isPublished:', episode.isPublished);
+    
+      console.log('📦 AFTER JSON.stringify/parse:');
+      console.log('  - episodeObj.trailerYoutubeLink:', episodeObj.trailerYoutubeLink);
+      console.log('  - episodeObj.isPublished:', episodeObj.isPublished);
+      console.log('  - episodeObj keys:', Object.keys(episodeObj));
+    
+      if (episodeObj.videoUrl) {
+        episodeObj.videoUrl = await this.s3Service.getSignedUrl(episodeObj.videoUrl, 7200);
+      }
+    
+      if (episodeObj.thumbnailUrl) {
+        episodeObj.thumbnailUrl = await this.s3Service.getSignedUrl(episodeObj.thumbnailUrl, 86400);
+      }
+    
+      if (episodeObj.subtitles) {
+        episodeObj.subtitles = await this.s3Service.signSubtitles(episodeObj.subtitles, 86400);
+      }
+
+      console.log('📤 FINAL RESPONSE OBJECT:');
+      console.log(JSON.stringify(episodeObj, null, 2));
+      console.log('='.repeat(60) + '\n');
 
       res.status(200).json({
         status: 'success',
         message: 'Episode updated successfully',
         data: {
-          episode
+          episode: episodeObj
         }
       });
     } catch (error) {
-      console.error('Error updating episode:', error);
+      console.error('❌ Error updating episode:', error);
       next(error);
     }
   };
