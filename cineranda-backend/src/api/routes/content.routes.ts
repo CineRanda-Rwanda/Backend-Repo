@@ -7,7 +7,33 @@ import { uploadContentFiles } from '../../middleware/upload.middleware';  // ✅
 const router = Router();
 const contentController = new ContentController();
 
-// --- CRITICAL: Place specific routes BEFORE parameterized routes ---
+// --- ADMIN-SPECIFIC ROUTES (Must come FIRST before all other routes) ---
+
+// GET /api/v1/content/admin/movies - Get all movies for admin
+router.get(
+  '/admin/movies',
+  authenticate,
+  authorize(['admin']),
+  contentController.getAdminMovies
+);
+
+// GET /api/v1/content/admin/series/:id - Get single series with full details for admin
+router.get(
+  '/admin/series/:id',
+  authenticate,
+  authorize(['admin']),
+  contentController.getAdminSeriesById
+);
+
+// GET /api/v1/content/admin/series - Get all series with full details for admin
+router.get(
+  '/admin/series',
+  authenticate,
+  authorize(['admin']),
+  contentController.getAdminSeries
+);
+
+// --- PUBLIC ROUTES (existing routes below) ---
 
 // ✅ ADD THIS NEW LINE HERE
 router.get('/series', contentController.getAllSeries);

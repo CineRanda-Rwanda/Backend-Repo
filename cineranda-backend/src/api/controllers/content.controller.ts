@@ -1943,4 +1943,266 @@ export class ContentController {
     }
   };
 
+  /**
+   * Get all movies for admin with full details
+   * GET /api/v1/content/admin/movies
+   */
+  getAdminMovies = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 20;
+      const skip = (page - 1) * limit;
+
+      // Build query filter
+      const queryObj: any = { contentType: 'Movie' };
+
+      // Filter by publish status if provided
+      if (req.query.isPublished !== undefined) {
+        queryObj.isPublished = req.query.isPublished === 'true';
+      }
+
+      // Filter by genre if provided
+      if (req.query.genreId) {
+        queryObj.genres = req.query.genreId;
+      }
+
+      // Filter by category if provided
+      if (req.query.categoryId) {
+        queryObj.categories = req.query.categoryId;
+      }
+
+      // Search by title if provided
+      if (req.query.search) {
+        queryObj.title = { $regex: req.query.search, $options: 'i' };
+      }
+
+      const totalMovies = await Content.countDocuments(queryObj);
+      
+      const movies = await Content.find(queryObj)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('genres', 'name')
+        .populate('categories', 'name')
+        .select('title description posterImageUrl movieFileUrl trailerYoutubeLink releaseYear duration priceInRwf priceInCoins isFree isPublished genres categories createdAt updatedAt');
+
+      // Sign URLs for movies
+      const signedMovies = await this.signContentArray(movies);
+
+      res.status(200).json({
+        status: 'success',
+        results: movies.length,
+        pagination: {
+          total: totalMovies,
+          page,
+          pages: Math.ceil(totalMovies / limit),
+          limit
+        },
+        data: { movies: signedMovies }
+      });
+    } catch (error) {
+      console.error('Error fetching admin movies:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * Get all series for admin with full season and episode details
+   * GET /api/v1/content/admin/series
+   */
+  getAdminSeries = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 20;
+      const skip = (page - 1) * limit;
+
+      // Build query filter
+      const queryObj: any = { contentType: 'Series' };
+
+      // Filter by publish status if provided
+      if (req.query.isPublished !== undefined) {
+        queryObj.isPublished = req.query.isPublished === 'true';
+      }
+
+      // Filter by genre if provided
+      if (req.query.genreId) {
+        queryObj.genres = req.query.genreId;
+      }
+
+      // Filter by category if provided
+      if (req.query.categoryId) {
+        queryObj.categories = req.query.categoryId;
+      }
+
+      // Search by title if provided
+      if (req.query.search) {
+        queryObj.title = { $regex: req.query.search, $options: 'i' };
+      }
+
+      const totalSeries = await Content.countDocuments(queryObj);
+      
+      const series = await Content.find(queryObj)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('genres', 'name')
+        .populate('categories', 'name')
+        .select('title description posterImageUrl trailerYoutubeLink releaseYear priceInRwf priceInCoins isFree isPublished totalSeriesPriceInRwf discountedSeriesPriceInRwf seriesDiscountPercent genres categories seasons createdAt updatedAt');
+
+      // Sign URLs for series and episodes
+      const signedSeries = await Promise.all(
+        series.map(async (seriesItem) => {
+          // ✅ Use 'any' type to allow dynamic properties
+          const seriesObj: any = seriesItem.toObject();
+          
+          // Sign poster image
+          if (seriesObj.posterImageUrl) {
+            seriesObj.posterImageUrl = await this.s3Service.getSignedUrl(seriesObj.posterImageUrl, 86400);
+          }
+
+          // Process seasons and episodes
+          if (seriesObj.seasons && seriesObj.seasons.length > 0) {
+            seriesObj.seasons = await Promise.all(
+              seriesObj.seasons.map(async (season: any) => {
+                // Process episodes in this season
+                if (season.episodes && season.episodes.length > 0) {
+                  season.episodes = await Promise.all(
+                    season.episodes.map(async (episode: any) => {
+                      const episodeObj: any = {
+                        _id: episode._id,
+                        episodeNumber: episode.episodeNumber,
+                        title: episode.title,
+                        description: episode.description || '',
+                        duration: episode.duration,
+                        isFree: Boolean(episode.isFree),
+                        isPublished: episode.isPublished !== undefined ? Boolean(episode.isPublished) : true,
+                        priceInRwf: episode.priceInRwf || 0,
+                        priceInCoins: episode.priceInCoins || 0,
+                        releaseDate: episode.releaseDate,
+                        createdAt: episode.createdAt,
+                        updatedAt: episode.updatedAt,
+                      };
+
+                      // Sign episode video URL (shorter expiry for admin preview)
+                      if (episode.videoUrl) {
+                        episodeObj.videoUrl = await this.s3Service.getSignedUrl(episode.videoUrl, 3600);
+                      }
+
+                      // Sign episode thumbnail
+                      if (episode.thumbnailUrl) {
+                        episodeObj.thumbnailUrl = await this.s3Service.getSignedUrl(episode.thumbnailUrl, 86400);
+                      }
+
+                      // Include trailer link
+                      if (episode.trailerYoutubeLink) {
+                        episodeObj.trailerYoutubeLink = episode.trailerYoutubeLink;
+                      }
+
+                      // Sign subtitles
+                      if (episode.subtitles) {
+                        episodeObj.subtitles = await this.s3Service.signSubtitles(episode.subtitles, 86400);
+                      }
+
+                      return episodeObj;
+                    })
+                  );
+                }
+
+                return {
+                  _id: season._id,
+                  seasonNumber: season.seasonNumber,
+                  seasonTitle: season.seasonTitle,
+                  description: season.description,
+                  releaseDate: season.releaseDate,
+                  episodes: season.episodes || [],
+                  episodeCount: season.episodes?.length || 0
+                };
+              })
+            );
+
+            // ✅ Add season count and total episode count (now works with 'any' type)
+            seriesObj.seasonCount = seriesObj.seasons.length;
+            seriesObj.totalEpisodes = seriesObj.seasons.reduce(
+              (total: number, season: any) => total + (season.episodeCount || 0),
+              0
+            );
+          } else {
+            seriesObj.seasons = [];
+            seriesObj.seasonCount = 0;
+            seriesObj.totalEpisodes = 0;
+          }
+
+          return seriesObj;
+        })
+      );
+
+      res.status(200).json({
+        status: 'success',
+        results: series.length,
+        pagination: {
+          total: totalSeries,
+          page,
+          pages: Math.ceil(totalSeries / limit),
+          limit
+        },
+        data: { series: signedSeries }
+      });
+    } catch (error) {
+      console.error('Error fetching admin series:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * Get single series with full details (admin)
+   * GET /api/v1/content/admin/series/:id
+   */
+  getAdminSeriesById = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+
+      const series = await Content.findOne({
+        _id: id,
+        contentType: 'Series'
+      })
+        .populate('genres', 'name')
+        .populate('categories', 'name');
+
+      if (!series) {
+        return next(new AppError('Series not found', 404));
+      }
+
+      // Sign URLs using existing helper method
+      const seriesObj = series.toObject();
+      const signedSeries = await this.signContentUrls(seriesObj);
+
+      res.status(200).json({
+        status: 'success',
+        data: { series: signedSeries }
+      });
+    } catch (error) {
+      console.error('Error fetching admin series by ID:', error);
+      next(error);
+    }
+  };
+}
+
+interface SeriesAdminResponse {
+  _id: string;
+  title: string;
+  description?: string;
+  posterImageUrl?: string;
+  trailerYoutubeLink?: string;
+  releaseYear?: number;
+  priceInRwf?: number;
+  priceInCoins?: number;
+  isFree?: boolean;
+  isPublished?: boolean;
+  genres?: any[];
+  categories?: any[];
+  seasons?: any[];
+  seasonCount: number;      // ✅ Explicitly defined
+  totalEpisodes: number;    // ✅ Explicitly defined
+  createdAt?: Date;
+  updatedAt?: Date;
 }
