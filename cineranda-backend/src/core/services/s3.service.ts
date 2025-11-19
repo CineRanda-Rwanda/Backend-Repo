@@ -36,6 +36,21 @@ export class S3Service {
    * @returns The public URL of the uploaded file.
    */
   async uploadFile(file: Express.Multer.File, folder: string): Promise<string> {
+    if (!file) {
+      throw new Error('No file provided for upload.');
+    }
+
+    const fileWithLocation = file as Express.Multer.File & { location?: string };
+
+    // When multer-s3 streams directly to S3, the location is already available
+    if (fileWithLocation.location) {
+      return fileWithLocation.location;
+    }
+
+    if (!file.buffer) {
+      throw new Error('File buffer is empty. Ensure upload middleware provides file buffers.');
+    }
+
     // Generate a unique filename to prevent overwrites
     const uniqueFileName = `${folder}/${crypto.randomBytes(16).toString('hex')}-${file.originalname}`;
 

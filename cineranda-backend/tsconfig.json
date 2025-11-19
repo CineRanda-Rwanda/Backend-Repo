@@ -14,6 +14,7 @@
     "sourceMap": true,
     "declaration": true,
     "baseUrl": ".",
+    "types": ["node", "multer-s3", "jest"],
     "paths": {
       "@/*": ["src/*"]
     },
