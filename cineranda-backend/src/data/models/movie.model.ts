@@ -9,11 +9,10 @@ export interface IEpisode {
   videoUrl: string;
   thumbnailUrl?: string;
   trailerYoutubeLink?: string;
-  priceInRwf: number;
-  priceInCoins: number;
+  price: number; // Unified price in RWF
   duration: number; // in minutes
   isFree: boolean;
-  isPublished?: boolean;     // ✅ ADD THIS LINE
+  isPublished?: boolean;
   subtitles?: {
     en?: string;
     fr?: string;
@@ -56,8 +55,7 @@ export interface IContent extends Document {
   // Movie-specific fields
   movieFileUrl?: string;
   duration?: number;
-  priceInRwf?: number;
-  priceInCoins?: number;
+  price: number; // Unified price in RWF
   subtitles?: {
     en?: string;
     fr?: string;
@@ -68,11 +66,12 @@ export interface IContent extends Document {
   seasons?: ISeason[];
   
   // Series pricing (auto-calculated)
-  totalSeriesPriceInRwf?: number;
-  totalSeriesPriceInCoins?: number;
+  totalSeriesPrice?: number;
   seriesDiscountPercent?: number;
-  discountedSeriesPriceInRwf?: number;
-  discountedSeriesPriceInCoins?: number;
+  discountedSeriesPrice?: number;
+  
+  // Control whether ratings are allowed for this content
+  ratingsEnabled?: boolean;
   
   // Common fields
   genres: mongoose.Types.ObjectId[] | IGenre[];
@@ -122,15 +121,7 @@ const EpisodeSchema = new Schema<IEpisode>({
     type: String 
   },
   // Episode pricing - REQUIRED for non-free episodes
-  priceInRwf: { 
-    type: Number,
-    required: function(this: IEpisode) {
-      return !this.isFree;
-    },
-    min: 0,
-    default: 0
-  },
-  priceInCoins: { 
+  price: {
     type: Number,
     required: function(this: IEpisode) {
       return !this.isFree;
@@ -236,14 +227,8 @@ const ContentSchema = new Schema<IContent>(
       },
       min: 1
     },
-    priceInRwf: { 
-      type: Number,
-      required: function(this: IContent) {
-        return this.contentType === 'Movie';
-      },
-      min: 0
-    },
-    priceInCoins: { 
+    // Unified movie price field (RWF)
+    price: {
       type: Number,
       required: function(this: IContent) {
         return this.contentType === 'Movie';
@@ -259,11 +244,7 @@ const ContentSchema = new Schema<IContent>(
     },
     
     // Series pricing (auto-calculated from episodes)
-    totalSeriesPriceInRwf: {
-      type: Number,
-      default: 0
-    },
-    totalSeriesPriceInCoins: {
+    totalSeriesPrice: {
       type: Number,
       default: 0
     },
@@ -273,13 +254,14 @@ const ContentSchema = new Schema<IContent>(
       min: 0,
       max: 100
     },
-    discountedSeriesPriceInRwf: {
+    discountedSeriesPrice: {
       type: Number,
       default: 0
     },
-    discountedSeriesPriceInCoins: {
-      type: Number,
-      default: 0
+    // allow toggling ratings per content
+    ratingsEnabled: {
+      type: Boolean,
+      default: true
     },
     
     // --- COMMON FIELDS ---
@@ -334,33 +316,28 @@ const ContentSchema = new Schema<IContent>(
 // --- PRE-SAVE HOOK: Auto-calculate series pricing ---
 ContentSchema.pre('save', function(next) {
   if (this.contentType === 'Series' && this.seasons && this.seasons.length > 0) {
-    let totalRwf = 0;
-    let totalCoins = 0;
+    let totalPrice = 0;
     
     // Sum up all non-free episode prices
     this.seasons.forEach(season => {
       season.episodes.forEach(episode => {
         if (!episode.isFree) {
-          totalRwf += episode.priceInRwf || 0;
-          totalCoins += episode.priceInCoins || 0;
+          totalPrice += episode.price || 0;
         }
       });
     });
     
-    this.totalSeriesPriceInRwf = totalRwf;
-    this.totalSeriesPriceInCoins = totalCoins;
+    this.totalSeriesPrice = totalPrice;
     
     // Apply discount if set
     const discount = this.seriesDiscountPercent || 0;
     if (discount > 0) {
-      this.discountedSeriesPriceInRwf = Math.round(totalRwf * (1 - discount / 100));
-      this.discountedSeriesPriceInCoins = Math.round(totalCoins * (1 - discount / 100));
+      this.discountedSeriesPrice = Math.round(totalPrice * (1 - discount / 100));
     } else {
-      this.discountedSeriesPriceInRwf = totalRwf;
-      this.discountedSeriesPriceInCoins = totalCoins;
+      this.discountedSeriesPrice = totalPrice;
     }
     
-    console.log(`Series pricing calculated: Total=${totalRwf} RWF, Discount=${discount}%, Final=${this.discountedSeriesPriceInRwf} RWF`);
+    console.log(`Series pricing calculated: Total=${totalPrice} RWF, Discount=${discount}%, Final=${this.discountedSeriesPrice} RWF`);
   }
   
   next();
@@ -393,13 +370,10 @@ ContentSchema.methods.updateRating = function(newRating: number) {
 ContentSchema.virtual('finalSeriesPrice').get(function(this: IContent) {
   if (this.contentType === 'Series') {
     return {
-      rwf: this.discountedSeriesPriceInRwf || this.totalSeriesPriceInRwf || 0,
-      coins: this.discountedSeriesPriceInCoins || this.totalSeriesPriceInCoins || 0,
+      price: this.discountedSeriesPrice || this.totalSeriesPrice || 0,
       discount: this.seriesDiscountPercent || 0,
-      originalPrice: {
-        rwf: this.totalSeriesPriceInRwf || 0,
-        coins: this.totalSeriesPriceInCoins || 0
-      }
+      originalPrice: this.totalSeriesPrice || 0,
+      currency: 'RWF'
     };
   }
   return null;

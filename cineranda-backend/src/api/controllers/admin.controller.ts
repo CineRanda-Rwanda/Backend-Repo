@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import mongoose from 'mongoose';
 import { User, IUser } from '../../data/models/user.model'; // Import IUser
 import AppError from '../../utils/AppError';
 
@@ -88,18 +89,76 @@ export class AdminController {
    */
   getAnalytics = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      // This is where you would build complex aggregation pipelines
+      const Content = mongoose.model('Content');
+      const Purchase = mongoose.model('Purchase');
+      
+      // Overview stats
       const totalUsers = await User.countDocuments();
-      const totalMovies = 0; // Replace with: await Movie.countDocuments();
-      const totalRevenue = 0; // Replace with aggregation from Purchase model
+      const activeUsers = await User.countDocuments({ isActive: true });
+      const pendingUsers = await User.countDocuments({ pendingVerification: true });
+      
+      // Content stats
+      const totalContent = await Content.countDocuments();
+      const movies = await Content.countDocuments({ contentType: 'Movie' });
+      const series = await Content.countDocuments({ contentType: 'Series' });
+      const published = await Content.countDocuments({ isPublished: true });
+      const drafts = await Content.countDocuments({ isPublished: false });
+      
+      // Revenue stats
+      const revenueData = await Purchase.aggregate([
+        { $match: { status: 'completed' } },
+        {
+          $group: {
+            _id: null,
+            totalRevenue: { $sum: '$amountPaid' },
+            totalTransactions: { $sum: 1 }
+          }
+        }
+      ]);
+      const revenue = revenueData[0] || { totalRevenue: 0, totalTransactions: 0 };
+      
+      // Wallet stats
+      const walletData = await User.aggregate([
+        {
+          $group: {
+            _id: null,
+            totalBalance: { $sum: '$walletBalance' },
+            totalBonusBalance: { $sum: '$bonusBalance' },
+            totalCombined: { $sum: { $add: ['$walletBalance', '$bonusBalance'] } }
+          }
+        }
+      ]);
+      const wallet = walletData[0] || { totalBalance: 0, totalBonusBalance: 0, totalCombined: 0 };
 
       res.status(200).json({
         status: 'success',
         data: {
-          totalUsers,
-          totalMovies,
-          totalRevenue,
-          // Add more analytics data here
+          overview: {
+            totalUsers,
+            activeUsers,
+            pendingUsers,
+            newUsersToday: 0 // Could add date filtering
+          },
+          content: {
+            totalContent,
+            movies,
+            series,
+            published,
+            drafts
+          },
+          revenue: {
+            totalRevenue: revenue.totalRevenue,
+            currency: 'RWF'
+          },
+          transactions: {
+            total: revenue.totalTransactions,
+            successful: revenue.totalTransactions
+          },
+          walletStats: {
+            totalBalance: wallet.totalBalance,
+            totalBonusBalance: wallet.totalBonusBalance,
+            totalCombined: wallet.totalCombined
+          }
         },
       });
     } catch (error) {

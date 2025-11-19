@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { ContentController } from '../controllers/content.controller';
-import { authenticate, authorize } from '../../middleware/auth.middleware';
+import { authenticate, authorize, optionalAuthenticate } from '../../middleware/auth.middleware';
 import { checkContentAccess, checkEpisodeAccess } from '../../middleware/contentAccess.middleware';
 import { uploadContentFiles } from '../../middleware/upload.middleware';  // ✅ Import uploadContentFiles
 
@@ -8,6 +8,21 @@ const router = Router();
 const contentController = new ContentController();
 
 // --- ADMIN-SPECIFIC ROUTES (Must come FIRST before all other routes) ---
+
+// ADMIN: Rating control endpoints
+router.patch(
+  '/admin/batch-ratings',
+  authenticate,
+  authorize(['admin']),
+  contentController.batchToggleRatings
+);
+
+router.patch(
+  '/admin/:id/ratings',
+  authenticate,
+  authorize(['admin']),
+  contentController.toggleContentRatings
+);
 
 // GET /api/v1/content/admin/movies - Get all movies for admin
 router.get(
@@ -33,30 +48,29 @@ router.get(
   contentController.getAdminSeries
 );
 
-// --- PUBLIC ROUTES (existing routes below) ---
+// --- PUBLIC ROUTES (no authentication required) ---
 
-// ✅ ADD THIS NEW LINE HERE
-router.get('/series', contentController.getAllSeries);
+// Search (no public prefix in tests)
+router.get('/search', contentController.advancedSearch);
 
-// Public content routes (specific routes first)
-router.get('/movies', contentController.getMovies);
-router.get('/movies/search', contentController.searchMovies);
-router.get('/movies/featured', contentController.getFeaturedMovies);
-router.get('/movies/genre/:genreId', contentController.getMoviesByGenre);
-router.get('/movies/category/:categoryId', contentController.getMoviesByCategory);
-
-// Protected route - THIS MUST COME BEFORE /movies/:id
+// Unlocked content (requires authentication, no public prefix)
 router.get('/unlocked', authenticate, contentController.getUnlockedContent);
 
-// Series specific routes (MUST come before parameterized routes)
+// Public content routes under /public prefix
+router.get('/public/featured', contentController.getFeaturedMovies);
+router.get('/public/type/:contentType', contentController.getContentByType);
+router.get('/public/movies/genre/:genreId', contentController.getMoviesByGenre);
+router.get('/public/movies/category/:categoryId', contentController.getMoviesByCategory);
+router.get('/public/movies', contentController.getMovies);
+
+// Trailer access (no authentication required)
+router.get('/movies/:id/trailer', contentController.getMovieTrailer);
+router.get('/series/:seriesId/seasons/:seasonNumber/episodes/:episodeId/trailer', contentController.getEpisodeTrailer);
+
+// Series routes
 router.get('/series/:contentId/seasons/:seasonNumber', contentController.getSeasonDetails);
 router.get('/series/:contentId/episodes/:episodeId', contentController.getEpisodeDetails);
-router.get('/series/:contentId', contentController.getSeriesDetails);
-
-// This parameterized route comes LAST among /movies/ routes
-router.get('/movies/:id', contentController.getMovieDetails);
-
-router.get('/type/:contentType', contentController.getContentByType);
+router.get('/series/:contentId', optionalAuthenticate, contentController.getSeriesDetails);
 
 // GET /api/v1/content - Get all content (Admin only)
 router.get(
@@ -65,6 +79,10 @@ router.get(
   authorize(['admin']),
   contentController.getAllContent
 );
+
+// Content detail route (public, but needs to come before admin :id route)
+// This handles both /content/:contentId for movies and series details
+router.get('/:contentId', optionalAuthenticate, contentController.getMovieDetails);
 
 // Access check and watch routes (specific before parameterized)
 router.get('/:contentId/access', authenticate, contentController.checkUserAccess);
@@ -76,9 +94,10 @@ router.get(
   contentController.getWatchEpisode
 );
 
-// GET /api/v1/content/:id - Get a single piece of content (Admin only)
+// GET /api/v1/content/admin/:id - Get a single piece of content (Admin only)
+// Note: This conflicts with :contentId above, so admin should use /admin/content/:id instead
 router.get(
-  '/:id',
+  '/admin/content/:id',
   authenticate,
   authorize(['admin']),
   contentController.getContent

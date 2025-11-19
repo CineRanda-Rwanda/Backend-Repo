@@ -75,8 +75,11 @@ describe('Payment Endpoints', () => {
       });
 
       it('should reject purchase with insufficient balance', async () => {
-        // Update user balance to low amount
-        await User.findByIdAndUpdate(userId, { balance: 100 });
+        // Update user wallet balance to low amount
+        await User.findByIdAndUpdate(userId, { 
+          'wallet.balance': 100,
+          'wallet.bonusBalance': 0
+        });
 
         const response = await request(app)
           .post('/api/v1/payments/content/purchase/wallet')
@@ -177,7 +180,7 @@ describe('Payment Endpoints', () => {
           .set('Authorization', `Bearer ${userToken}`)
           .expect(403);
 
-        expect(watchResponse.body.message).toContain('added after you purchased');
+        expect(watchResponse.body.message).toContain('was added');
       });
     });
   });
@@ -228,7 +231,7 @@ describe('Payment Endpoints', () => {
     });
 
     it('should reject season purchase with insufficient balance', async () => {
-      await User.findByIdAndUpdate(userId, { balance: 100 });
+      await User.findByIdAndUpdate(userId, { 'wallet.balance': 100, 'wallet.bonusBalance': 0 });
 
       const response = await request(app)
         .post('/api/v1/payments/season/purchase/wallet')
@@ -374,7 +377,10 @@ describe('Payment Endpoints', () => {
     });
 
     it('should reject episode purchase with insufficient balance', async () => {
-      await User.findByIdAndUpdate(userId, { balance: 100 });
+      await User.findByIdAndUpdate(userId, { 
+        'wallet.balance': 100,
+        'wallet.bonusBalance': 0
+      });
 
       const response = await request(app)
         .post('/api/v1/payments/episode/purchase/wallet')

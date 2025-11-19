@@ -126,6 +126,63 @@ export const checkEpisodeAccess = async (
     );
 
     if (hasFullSeries) {
+      // Check if episode was added after series purchase
+      const seriesPurchase = user.purchasedContent?.find(
+        (pc: any) => pc.contentId.toString() === contentId
+      );
+      
+      if (seriesPurchase && seriesPurchase.episodeIdsAtPurchase) {
+        const episodeIdStr = episodeId.toString();
+        const purchasedEpisodeIds = seriesPurchase.episodeIdsAtPurchase as string[];
+        const wasAvailableAtPurchase = purchasedEpisodeIds.includes(episodeIdStr);
+        
+        if (!wasAvailableAtPurchase) {
+          // Check if user has purchased this specific locked episode separately
+          const hasPurchasedLockedEpisode = user.purchasedEpisodes?.some(
+            (pe: any) => pe.episodeId.toString() === episodeId
+          );
+          
+          if (hasPurchasedLockedEpisode) {
+            // User bought the locked episode separately - allow access
+            (req as any).episode = episode;
+            (req as any).series = series;
+            (req as any).seasonNumber = seasonNumber;
+            return next();
+          }
+          
+          return next(new AppError(
+            `This episode was added to ${series.title} after you purchased the full series. Please purchase this episode separately or upgrade your purchase.`,
+            403
+          ));
+        }
+      }
+      
+      (req as any).episode = episode;
+      (req as any).series = series;
+      (req as any).seasonNumber = seasonNumber;
+      return next();
+    }
+
+    // Check if user purchased the season containing this episode
+    const seasonPurchase = user.purchasedSeasons?.find(
+      (ps: any) => ps.contentId.toString() === contentId && ps.seasonNumber === seasonNumber
+    );
+
+    if (seasonPurchase) {
+      // Check if episode was added after season purchase
+      if (seasonPurchase.episodeIdsAtPurchase) {
+        const episodeIdStr = episodeId.toString();
+        const purchasedEpisodeIds = seasonPurchase.episodeIdsAtPurchase as string[];
+        const wasAvailableAtPurchase = purchasedEpisodeIds.includes(episodeIdStr);
+        
+        if (!wasAvailableAtPurchase) {
+          return next(new AppError(
+            `This episode was added to Season ${seasonNumber} after you purchased it. Please purchase this episode separately.`,
+            403
+          ));
+        }
+      }
+      
       (req as any).episode = episode;
       (req as any).series = series;
       (req as any).seasonNumber = seasonNumber;

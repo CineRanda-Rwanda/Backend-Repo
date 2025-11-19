@@ -18,23 +18,17 @@ export class PaymentController {
   }
 
   /**
-   * Helper method to get correct pricing for content
+   * Helper method to get correct pricing for content (RWF only)
    */
-  private getContentPricing(content: any): { priceInRwf: number; priceInCoins: number } {
+  private getContentPricing(content: any): number {
     if (content.contentType === 'Movie') {
-      return {
-        priceInRwf: content.priceInRwf || 0,
-        priceInCoins: content.priceInCoins || 0
-      };
+      return content.price || 0;
     } else if (content.contentType === 'Series') {
       // Use discounted price for series (already includes discount if set)
-      return {
-        priceInRwf: content.discountedSeriesPriceInRwf || content.totalSeriesPriceInRwf || 0,
-        priceInCoins: content.discountedSeriesPriceInCoins || content.totalSeriesPriceInCoins || 0
-      };
+      return content.discountedSeriesPrice || content.totalSeriesPrice || 0;
     }
     
-    return { priceInRwf: 0, priceInCoins: 0 };
+    return 0;
   }
 
   /**
@@ -58,10 +52,10 @@ export class PaymentController {
         return next(new AppError('Content not found', 404));
       }
 
-      // FIX: Get correct pricing based on content type
-      const { priceInRwf, priceInCoins } = this.getContentPricing(content);
+      // Get correct pricing based on content type (RWF only)
+      const price = this.getContentPricing(content);
 
-      if (priceInRwf <= 0) {
+      if (price <= 0) {
         return next(new AppError('Invalid content pricing', 400));
       }
 
@@ -70,8 +64,7 @@ export class PaymentController {
         req.user,
         contentId,
         content.title,
-        priceInRwf,
-        priceInCoins
+        price
       );
 
       // Extract the txRef from the response
@@ -85,8 +78,7 @@ export class PaymentController {
           userId,
           contentId,
           content.contentType,
-          priceInRwf,
-          priceInCoins,
+          price,
           'flutterwave',
           response.data.id?.toString() || 'unknown',
           txRef,
@@ -95,7 +87,7 @@ export class PaymentController {
           {
             flutterwave: response.data,
             discountApplied: content.contentType === 'Series' ? content.seriesDiscountPercent : 0,
-            originalPrice: content.contentType === 'Series' ? content.totalSeriesPriceInRwf : priceInRwf
+            originalPrice: content.contentType === 'Series' ? content.totalSeriesPrice : price
           }
         );
       }
@@ -105,7 +97,8 @@ export class PaymentController {
         data: {
           paymentLink: response.data.link,
           transactionRef: txRef,
-          amount: priceInRwf,
+          amount: price,
+          currency: 'RWF',
           discount: content.contentType === 'Series' ? content.seriesDiscountPercent : 0
         }
       });
@@ -164,7 +157,6 @@ export class PaymentController {
           null,
           null,
           amountValue,
-          0,
           'flutterwave',
           response.data.id?.toString() || 'unknown',
           txRef,
@@ -198,12 +190,20 @@ export class PaymentController {
         return next(new AppError('Authentication required', 401));
       }
 
-      const user = await User.findById(req.user._id).select('balance');
+      const user = await User.findById(req.user._id).select('wallet balance');
+
+      const wallet = user?.wallet || { balance: user?.balance || 0, bonusBalance: 0 };
+      const totalBalance = (wallet.balance || 0) + (wallet.bonusBalance || 0) + (user?.balance && !(wallet && wallet.balance) ? user.balance : 0);
 
       res.status(200).json({
         status: 'success',
         data: {
-          balance: user?.balance || 0
+          wallet: {
+            balance: wallet.balance || 0,
+            bonusBalance: wallet.bonusBalance || 0,
+            totalBalance,
+          },
+          currency: 'RWF'
         }
       });
     } catch (error) {
@@ -238,17 +238,18 @@ export class PaymentController {
         return next(new AppError('User not found', 404));
       }
 
-      // FIX: Get correct pricing based on content type
-      const { priceInRwf, priceInCoins } = this.getContentPricing(content);
+      // Get price (RWF only)
+      const price = this.getContentPricing(content);
 
-      if (priceInRwf <= 0) {
+      if (price <= 0) {
         return next(new AppError('Invalid content pricing', 400));
       }
 
-      // Check if user has enough balance
-      if (user.balance < priceInRwf) {
+      // Compute user's total available funds (wallet bonus + wallet balance)
+      const walletTotal = (user.wallet?.bonusBalance || 0) + (user.wallet?.balance || 0);
+      if (walletTotal < price) {
         return next(new AppError(
-          `Insufficient balance. You need ${priceInRwf} RWF but have ${user.balance} RWF.`, 
+          `Insufficient balance. You need ${price} RWF but have ${walletTotal} RWF.`,
           400
         ));
       }
@@ -263,21 +264,36 @@ export class PaymentController {
         return next(new AppError('You have already purchased this content', 400));
       }
 
-      // 1. Deduct from user balance AND add to purchasedContent
+      // 1. Deduct from user's wallet (bonus used first) and add purchasedContent
+      await (user as any).deductFromWallet(price, 'purchase', `Purchased ${content.title}${content.contentType === 'Series' && content.seriesDiscountPercent ? ` (${content.seriesDiscountPercent}% discount)` : ''}`);
+
+      // Prepare purchasedContent entry. For Series, snapshot included episode IDs at purchase time
+      const purchaseEntry: any = {
+        contentId: contentId,
+        purchaseDate: new Date(),
+        price: price,
+        currency: 'RWF'
+      };
+
+      if (content.contentType === 'Series') {
+        // Collect all current episode ids for snapshot
+        const episodeIds: string[] = [];
+        (content.seasons || []).forEach((s: any) => {
+          (s.episodes || []).forEach((e: any) => {
+            if (e && e._id) episodeIds.push(e._id.toString());
+          });
+        });
+        purchaseEntry.episodeIdsAtPurchase = episodeIds;
+      }
+
       const updatedUser = await User.findByIdAndUpdate(
         user._id,
-        { 
-          $inc: { balance: -priceInRwf },
+        {
           $push: {
-            purchasedContent: {
-              contentId: contentId,
-              purchaseDate: new Date(),
-              price: priceInRwf,
-              currency: 'RWF'
-            },
+            purchasedContent: purchaseEntry,
             transactions: {
               type: 'purchase',
-              amount: -priceInRwf,
+              amount: -price,
               description: `Purchased ${content.title}${content.contentType === 'Series' && content.seriesDiscountPercent ? ` (${content.seriesDiscountPercent}% discount)` : ''}`,
               createdAt: new Date()
             }
@@ -292,8 +308,7 @@ export class PaymentController {
         String(user._id),
         contentId,
         content.contentType,
-        priceInRwf,
-        priceInCoins,
+        price,
         'wallet',
         transactionRef,
         transactionRef,
@@ -302,7 +317,7 @@ export class PaymentController {
         { 
           purchaseDate: new Date(),
           discountApplied: content.contentType === 'Series' ? content.seriesDiscountPercent : 0,
-          originalPrice: content.contentType === 'Series' ? content.totalSeriesPriceInRwf : priceInRwf
+          originalPrice: content.contentType === 'Series' ? content.totalSeriesPrice : price
         }
       );
 
@@ -313,13 +328,19 @@ export class PaymentController {
           content: {
             _id: content._id,
             title: content.title,
-            contentType: content.contentType
+            contentType: content.contentType,
+            ...(content.contentType === 'Series' && purchaseEntry.episodeIdsAtPurchase ? {
+              episodesIncluded: purchaseEntry.episodeIdsAtPurchase.length
+            } : {})
           },
-          pricePaid: priceInRwf,
-          originalPrice: content.contentType === 'Series' ? content.totalSeriesPriceInRwf : priceInRwf,
+          pricePaid: price,
+          currency: 'RWF',
+          originalPrice: content.contentType === 'Series' ? content.totalSeriesPrice : price,
           discount: content.contentType === 'Series' ? `${content.seriesDiscountPercent}%` : '0%',
-          savings: content.contentType === 'Series' ? (content.totalSeriesPriceInRwf || 0) - priceInRwf : 0,
-          remainingBalance: updatedUser?.balance || 0
+          savings: content.contentType === 'Series' ? (content.totalSeriesPrice || 0) - price : 0,
+          remainingBalance: updatedUser?.wallet?.balance || 0,
+          remainingBonusBalance: updatedUser?.wallet?.bonusBalance || 0,
+          totalBalance: (updatedUser?.wallet?.balance || 0) + (updatedUser?.wallet?.bonusBalance || 0)
         }
       });
     } catch (error) {
@@ -372,28 +393,35 @@ export class PaymentController {
         return next(new AppError('User not found', 404));
       }
 
-      const episodePriceRwf = episode.priceInRwf || 0;
-      const episodePriceCoins = episode.priceInCoins || 0;
+      // Determine episode price (RWF only)
+      const episodePrice = episode.price || 0;
 
-      if (episodePriceRwf <= 0) {
+      if (episodePrice <= 0) {
         return next(new AppError('Invalid episode pricing', 400));
       }
 
-      // Check if user has enough balance
-      if (user.balance < episodePriceRwf) {
+      // Compute user's total available balance (wallet only)
+      const walletTotal = (user.wallet?.bonusBalance || 0) + (user.wallet?.balance || 0);
+      if (walletTotal < episodePrice) {
         return next(new AppError(
-          `Insufficient balance. You need ${episodePriceRwf} RWF but have ${user.balance} RWF.`, 
+          `Insufficient balance. You need ${episodePrice} RWF but have ${walletTotal} RWF.`, 
           400
         ));
       }
 
       // Check if already purchased the full series
-      const hasFullSeries = user.purchasedContent?.some(
+      const seriesPurchase = user.purchasedContent?.find(
         (pc: any) => pc.contentId?.toString() === contentId
       );
       
-      if (hasFullSeries) {
-        return next(new AppError('You have already purchased the full series', 400));
+      if (seriesPurchase) {
+        // Allow purchasing if episode was added AFTER series purchase (locked episode)
+        const episodeWasAvailable = seriesPurchase.episodeIdsAtPurchase?.includes(episodeId);
+        
+        if (episodeWasAvailable) {
+          return next(new AppError('You have already purchased the full series which includes this episode', 400));
+        }
+        // If episode wasn't available at purchase time, allow buying it separately
       }
 
       // Check if already purchased this episode
@@ -405,22 +433,23 @@ export class PaymentController {
         return next(new AppError('You have already purchased this episode', 400));
       }
 
-      // Update user: deduct balance and add purchased episode
+      // Deduct from wallet first (bonus then main)
+      await (user as any).deductFromWallet(episodePrice, 'purchase', `Purchased ${series.title} - S${seasonNumber}E${episode.episodeNumber}: ${episode.title}`);
+
       const updatedUser = await User.findByIdAndUpdate(
         user._id,
         { 
-          $inc: { balance: -episodePriceRwf },
           $push: {
             purchasedEpisodes: {
               contentId: contentId,
               episodeId: episodeId,
               purchaseDate: new Date(),
-              price: episodePriceRwf,
+              price: episodePrice,
               currency: 'RWF'
             },
             transactions: {
               type: 'purchase',
-              amount: -episodePriceRwf,
+              amount: -episodePrice,
               description: `Purchased ${series.title} - S${seasonNumber}E${episode.episodeNumber}: ${episode.title}`,
               createdAt: new Date()
             }
@@ -435,8 +464,7 @@ export class PaymentController {
         String(user._id),
         contentId,
         'Episode',  // This is the contentType, not purchaseType
-        episodePriceRwf,
-        episodePriceCoins,
+        episodePrice,
         'wallet',
         transactionRef,
         transactionRef,
@@ -466,12 +494,176 @@ export class PaymentController {
             _id: series._id,
             title: series.title
           },
-          pricePaid: episodePriceRwf,
-          remainingBalance: updatedUser?.balance || 0
+          pricing: {
+            pricePaid: episodePrice,
+            currency: 'RWF'
+          },
+          remainingBalance: updatedUser?.wallet?.balance || 0,
+          remainingBonusBalance: updatedUser?.wallet?.bonusBalance || 0,
+          totalBalance: (updatedUser?.wallet?.balance || 0) + (updatedUser?.wallet?.bonusBalance || 0)
         }
       });
     } catch (error) {
       console.error('Episode purchase error:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * Purchase a season with wallet
+   */
+  purchaseSeasonWithWallet = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      if (!req.user) {
+        return next(new AppError('Authentication required', 401));
+      }
+
+      const { contentId, seasonNumber } = req.body;
+      
+      if (!contentId || !seasonNumber) {
+        return next(new AppError('Content ID and season number are required', 400));
+      }
+
+      // Find series
+      const series = await Content.findOne({ _id: contentId, contentType: 'Series' });
+      if (!series) {
+        return next(new AppError('Series not found', 404));
+      }
+
+      // Find the specific season
+      const season = series.seasons?.find((s: any) => s.seasonNumber === parseInt(seasonNumber));
+      if (!season) {
+        return next(new AppError('Season not found', 404));
+      }
+
+      // Get fresh user data
+      const user = await User.findById(req.user._id);
+      if (!user) {
+        return next(new AppError('User not found', 404));
+      }
+
+      // Calculate season price (sum of all episode prices with series discount)
+      let seasonTotalPrice = 0;
+      const episodeIds: string[] = [];
+      (season.episodes || []).forEach((e: any) => {
+        if (e && e._id) {
+          const episodePrice = e.price || 0;
+          seasonTotalPrice += episodePrice;
+          episodeIds.push(e._id.toString());
+        }
+      });
+
+      // Apply series discount if available
+      const discountPercent = series.seriesDiscountPercent || 0;
+      const originalPrice = seasonTotalPrice;
+      const discountAmount = (seasonTotalPrice * discountPercent) / 100;
+      const finalPrice = seasonTotalPrice - discountAmount;
+
+      if (finalPrice <= 0) {
+        return next(new AppError('Invalid season pricing', 400));
+      }
+
+      // Check wallet balance
+      const walletTotal = (user.wallet?.bonusBalance || 0) + (user.wallet?.balance || 0);
+      if (walletTotal < finalPrice) {
+        return next(new AppError(
+          `Insufficient balance. You need ${finalPrice} RWF but have ${walletTotal} RWF.`, 
+          400
+        ));
+      }
+
+      // Check if already purchased the full series
+      const hasFullSeries = user.purchasedContent?.some(
+        (pc: any) => pc.contentId?.toString() === contentId
+      );
+      
+      if (hasFullSeries) {
+        return next(new AppError('You have already purchased the full series', 400));
+      }
+
+      // Check if already purchased this season
+      const alreadyPurchasedSeason = user.purchasedSeasons?.some(
+        (ps: any) => ps.seasonId?.toString() === season._id?.toString()
+      );
+      
+      if (alreadyPurchasedSeason) {
+        return next(new AppError('You have already purchased this season', 400));
+      }
+
+      // Deduct from wallet
+      await (user as any).deductFromWallet(finalPrice, 'purchase', `Purchased ${series.title} - Season ${seasonNumber}`);
+
+      const updatedUser = await User.findByIdAndUpdate(
+        user._id,
+        { 
+          $push: {
+            purchasedSeasons: {
+              contentId: contentId,
+              seasonId: season._id,
+              seasonNumber: parseInt(seasonNumber),
+              purchaseDate: new Date(),
+              price: finalPrice,
+              currency: 'RWF',
+              episodeIdsAtPurchase: episodeIds
+            },
+            transactions: {
+              type: 'purchase',
+              amount: -finalPrice,
+              description: `Purchased ${series.title} - Season ${seasonNumber}`,
+              createdAt: new Date()
+            }
+          }
+        },
+        { new: true }
+      );
+
+      // Create purchase record
+      const transactionRef = `WALLET-SEASON-${Date.now()}`;
+      await this.paymentRepository.createPurchaseRecord(
+        String(user._id),
+        contentId,
+        'Season',
+        finalPrice,
+        'wallet',
+        transactionRef,
+        transactionRef,
+        'completed',
+        'content',
+        { 
+          purchaseDate: new Date(),
+          seasonId: season._id,
+          seasonNumber: parseInt(seasonNumber),
+          episodeIdsAtPurchase: episodeIds,
+          originalPrice: originalPrice,
+          discountPercent: discountPercent,
+          isSeasonPurchase: true
+        }
+      );
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Season purchased successfully',
+        data: {
+          season: {
+            _id: season._id,
+            seasonNumber: parseInt(seasonNumber),
+            episodeCount: episodeIds.length,
+            episodesIncluded: episodeIds.length
+          },
+          series: {
+            _id: series._id,
+            title: series.title
+          },
+          pricing: {
+            originalPrice: originalPrice,
+            discount: discountPercent,
+            finalPrice: finalPrice
+          },
+          remainingBalance: updatedUser?.wallet?.balance || 0
+        }
+      });
+    } catch (error) {
+      console.error('Season purchase error:', error);
       next(error);
     }
   };
@@ -532,14 +724,6 @@ export class PaymentController {
                   }
                 }
               );
-              
-              // Also add coins if applicable
-              if (purchase.coinAmount > 0) {
-                await this.paymentRepository.addCoinsToUser(
-                  purchase.userId.toString(),
-                  purchase.coinAmount
-                );
-              }
             }
             
             // Redirect to success page
@@ -614,14 +798,6 @@ export class PaymentController {
                 }
               }
             );
-            
-            // Also add coins if applicable
-            if (purchase.coinAmount > 0) {
-              await this.paymentRepository.addCoinsToUser(
-                purchase.userId.toString(),
-                purchase.coinAmount
-              );
-            }
           }
         }
       }

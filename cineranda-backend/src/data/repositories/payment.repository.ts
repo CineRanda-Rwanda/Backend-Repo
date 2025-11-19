@@ -13,7 +13,6 @@ export class PaymentRepository extends BaseRepository<IPurchase> {
     contentId: string | null,
     contentType: string | null,
     amountPaid: number,
-    coinAmount: number,
     paymentMethod: string,
     transactionId: string,
     transactionRef: string,
@@ -24,7 +23,6 @@ export class PaymentRepository extends BaseRepository<IPurchase> {
     const purchaseData: any = {
       userId: new mongoose.Types.ObjectId(userId),
       amountPaid,
-      coinAmount,
       paymentMethod,
       transactionId,
       transactionRef,
@@ -64,19 +62,43 @@ export class PaymentRepository extends BaseRepository<IPurchase> {
   }
 
   async addBalanceToUser(userId: string, amount: number) {
-    return await User.findByIdAndUpdate(
-      userId,
-      { $inc: { balance: amount } },
-      { new: true }
-    );
+    // Add to wallet.balance in the unified wallet
+    const user = await User.findById(userId);
+    if (!user) throw new Error('User not found');
+    
+    if (!user.wallet) {
+      user.wallet = { balance: 0, bonusBalance: 0, transactions: [] };
+    }
+    
+    user.wallet.balance = (user.wallet.balance || 0) + amount;
+    user.wallet.transactions.push({
+      amount,
+      type: 'topup',
+      description: 'Wallet top-up',
+      createdAt: new Date()
+    });
+    
+    return await user.save();
   }
 
-  async addCoinsToUser(userId: string, coinAmount: number) {
-    return await User.findByIdAndUpdate(
-      userId,
-      { $inc: { coins: coinAmount } },
-      { new: true }
-    );
+  async addBonusToUser(userId: string, bonusAmount: number, description: string = 'Bonus') {
+    // Add to wallet.bonusBalance
+    const user = await User.findById(userId);
+    if (!user) throw new Error('User not found');
+    
+    if (!user.wallet) {
+      user.wallet = { balance: 0, bonusBalance: 0, transactions: [] };
+    }
+    
+    user.wallet.bonusBalance = (user.wallet.bonusBalance || 0) + bonusAmount;
+    user.wallet.transactions.push({
+      amount: bonusAmount,
+      type: 'bonus',
+      description,
+      createdAt: new Date()
+    });
+    
+    return await user.save();
   }
 
   async getUserPurchases(userId: string, page: number = 1, limit: number = 10) {

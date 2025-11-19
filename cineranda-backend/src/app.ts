@@ -6,8 +6,6 @@ import routes from './api/routes';
 import errorHandler from './middleware/errorHandler';
 import requestLogger from './middleware/requestLogger';
 import { detectUserLocation } from './middleware/location.middleware';
-import userRoutes from './api/routes/user.routes';
-import settingsRoutes from './api/routes/settings.routes';
 
 const app = express();
 
@@ -26,10 +24,8 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
 });
 
-// API routes
+// API routes - All routes are registered in routes/index.ts
 app.use(config.apiPrefix, routes);
-app.use('/api/v1/users', userRoutes);
-app.use('/api/v1/settings', settingsRoutes);
 
 // Error handling middleware
 app.use(errorHandler);

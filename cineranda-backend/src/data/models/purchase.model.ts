@@ -5,7 +5,6 @@ export interface IPurchase extends Document {
   contentId: mongoose.Types.ObjectId;
   contentType: string;
   amountPaid: number;
-  coinAmount: number;
   paymentMethod: string;
   transactionId: string;
   transactionRef: string;
@@ -29,15 +28,11 @@ const PurchaseSchema = new Schema(
     },
     contentType: {
       type: String,
-      enum: ['Movie', 'Series', 'Episode', 'WalletTopUp']
+      enum: ['Movie', 'Series', 'Episode', 'Season', 'WalletTopUp']
     },
     amountPaid: {
       type: Number,
       required: true
-    },
-    coinAmount: {
-      type: Number,
-      default: 0
     },
     paymentMethod: {
       type: String,

@@ -120,6 +120,37 @@ export class UserController {
     }
   };
 
+  // Update user details (admin only)
+  updateUser = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { firstName, lastName, isActive, role } = req.body;
+      
+      // Build update object with only provided fields
+      const updateData: any = {};
+      if (firstName !== undefined) updateData.firstName = firstName;
+      if (lastName !== undefined) updateData.lastName = lastName;
+      if (isActive !== undefined) updateData.isActive = isActive;
+      if (role !== undefined) updateData.role = role;
+      
+      const user = await User.findByIdAndUpdate(
+        req.params.id,
+        updateData,
+        { new: true, runValidators: true }
+      ).select('-pin');
+      
+      if (!user) {
+        return next(new AppError('User not found', 404));
+      }
+      
+      res.status(200).json({
+        status: 'success',
+        data: user
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
   // Update user's role
   updateUserRole = async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -234,17 +265,18 @@ export class UserController {
         return next(new AppError('User not found', 404));
       }
       
-      // Initialize coinWallet if it doesn't exist
-      if (!user.coinWallet) {
-        user.coinWallet = { 
-          balance: 0, 
+      // Initialize wallet if it doesn't exist
+      if (!user.wallet) {
+        user.wallet = { 
+          balance: 0,
+          bonusBalance: 0, 
           transactions: [] 
         };
       }
       
-      // Add transaction
-      user.coinWallet.balance += amount;
-      user.coinWallet.transactions.push({
+      // Add to bonusBalance (admin adjustments go to bonus)
+      user.wallet.bonusBalance += amount;
+      user.wallet.transactions.push({
         amount,
         type: 'admin-adjustment',
         description: description || 'Admin adjustment',
@@ -259,10 +291,75 @@ export class UserController {
           user: {
             _id: user._id,
             username: user.username,
-            coinWallet: {
-              balance: user.coinWallet.balance
+            wallet: {
+              balance: user.wallet.balance,
+              bonusBalance: user.wallet.bonusBalance,
+              totalBalance: (user.wallet.balance || 0) + (user.wallet.bonusBalance || 0)
             }
           }
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // Adjust user's unified wallet balance (credit/debit)
+  adjustBalance = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { amount, type, category, description } = req.body;
+
+      if (typeof amount !== 'number' || amount <= 0) {
+        return next(new AppError('Amount must be a positive number', 400));
+      }
+
+      if (!['credit', 'debit'].includes(type)) {
+        return next(new AppError('Type must be either "credit" or "debit"', 400));
+      }
+
+      const user = await User.findById(req.params.id);
+      if (!user) return next(new AppError('User not found', 404));
+
+      // Debug logging
+      // Ensure wallet exists
+      if (!user.wallet) {
+        (user as any).wallet = { balance: 0, bonusBalance: 0, transactions: [] };
+      }
+
+      // Map category to valid transaction type
+      const validTypes = ['welcome-bonus', 'admin-adjustment', 'purchase', 'refund', 'topup', 'bonus'];
+      let transactionType = category || 'admin-adjustment';
+      
+      // Handle common aliases/corrections
+      if (transactionType === 'adjustment') {
+        transactionType = 'admin-adjustment';
+      }
+      
+      // Validate transaction type
+      if (!validTypes.includes(transactionType)) {
+        return next(new AppError(`Invalid category. Must be one of: ${validTypes.join(', ')}`, 400));
+      }
+
+      if (type === 'credit') {
+        const asBonus = transactionType === 'bonus';
+        await (user as any).addToWallet(amount, transactionType, description || 'Admin adjustment', asBonus);
+      } else {
+        // debit
+        try {
+          await (user as any).deductFromWallet(amount, transactionType, description || 'Admin adjustment');
+        } catch (err: any) {
+          return next(new AppError(err.message || 'Insufficient balance', 400));
+        }
+      }
+
+      const updated = await User.findById(req.params.id).select('wallet');
+
+      res.status(200).json({
+        status: 'success',
+        data: {
+          userId: req.params.id,
+          wallet: updated?.wallet || { balance: 0, bonusBalance: 0 },
+          newBalance: (updated?.wallet?.balance || 0) + (updated?.wallet?.bonusBalance || 0)
         }
       });
     } catch (error) {
@@ -273,7 +370,7 @@ export class UserController {
   // Get user's transaction history
   getUserTransactions = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const user = await User.findById(req.params.id).select('coinWallet');
+      const user = await User.findById(req.params.id).select('wallet');
       
       if (!user) {
         return next(new AppError('User not found', 404));
@@ -282,8 +379,10 @@ export class UserController {
       res.status(200).json({
         status: 'success',
         data: {
-          balance: user.coinWallet?.balance || 0,
-          transactions: user.coinWallet?.transactions || []
+          balance: user.wallet?.balance || 0,
+          bonusBalance: user.wallet?.bonusBalance || 0,
+          totalBalance: (user.wallet?.balance || 0) + (user.wallet?.bonusBalance || 0),
+          transactions: user.wallet?.transactions || []
         }
       });
     } catch (error) {
@@ -291,7 +390,7 @@ export class UserController {
     }
   };
 
-  // Delete user
+  // Delete user (soft delete - deactivate)
   deleteUser = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { id } = req.params;
@@ -301,7 +400,12 @@ export class UserController {
         return next(new AppError('You cannot delete your own account through this endpoint', 403));
       }
       
-      const user = await User.findByIdAndDelete(id);
+      // Soft delete: set isActive to false instead of permanently deleting
+      const user = await User.findByIdAndUpdate(
+        id,
+        { isActive: false },
+        { new: true }
+      );
       
       if (!user) {
         return next(new AppError('No user found with that ID', 404));

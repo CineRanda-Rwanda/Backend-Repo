@@ -40,10 +40,16 @@ export class AuthController {
   
   register = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { username, phoneNumber, pin, preferredChannel } = req.body;
+      const { phoneNumber, preferredChannel } = req.body;
       
-      if (!username || !phoneNumber || !pin) {
-        return next(new AppError('Username, phone number and PIN are required', 400));
+      if (!phoneNumber) {
+        return next(new AppError('Phone number is required', 400));
+      }
+      
+      // Validate phone number format (E.164: +[country][number])
+      const phoneRegex = /^\+[1-9]\d{7,14}$/;
+      if (!phoneRegex.test(phoneNumber)) {
+        return next(new AppError('Invalid phone number format', 400));
       }
       
       // Validate channel preference if provided
@@ -60,39 +66,23 @@ export class AuthController {
       }
 
       // Generate verification code with the enhanced service
-      // To use registration number
-      const verificationCode = await this.verificationService.sendVerificationCode(phoneNumber, 'both');
-
-      // Or with an alternate number
-      // const verificationCode = await this.verificationService.sendVerificationCode(
-      //   phoneNumber, 
-      //   'both',
-      //   req.body.alternatePhoneNumber
-      // );
-      
-      // Hash the PIN
-      const hashedPin = pin; // Let the model handle the hashing
+      const verificationCode = await this.verificationService.sendVerificationCode(phoneNumber, channel);
       
       // If user exists but is unverified, update the record
       if (existingUser) {
-        existingUser.username = username;
-        existingUser.pin = hashedPin;
         existingUser.verificationCode = verificationCode;
         existingUser.verificationCodeExpires = new Date(Date.now() + 10 * 60 * 1000);
         existingUser.pendingVerification = true;
         await existingUser.save();
       } else {
-        // Create new unverified user
+        // Create new unverified user (minimal data)
         await User.create({
-          username,
           phoneNumber,
-          pin: hashedPin,
           role: 'user',
           pendingVerification: true,
           verificationCode,
           verificationCodeExpires: new Date(Date.now() + 10 * 60 * 1000),
-          phoneVerified: false,
-          coinWallet: { balance: 0, transactions: [] }
+          phoneVerified: false
         });
       }
       
@@ -104,10 +94,9 @@ export class AuthController {
       // Respond with success but no token yet
       res.status(200).json({
         status: 'success',
-        message: `Verification code sent via ${channelMessage}`,
+        message: `verification code sent via ${channelMessage}`,
         data: {
           phoneNumber,
-          username,
           verificationRequired: true
         }
       });
@@ -119,10 +108,10 @@ export class AuthController {
   // Add this new method for completing registration after verification
   verifyAndCompleteRegistration = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { phoneNumber, verificationCode } = req.body;
+      const { phoneNumber, verificationCode, username, pin } = req.body;
       
-      if (!phoneNumber || !verificationCode) {
-        return next(new AppError('Phone number and verification code are required', 400));
+      if (!phoneNumber || !verificationCode || !username || !pin) {
+        return next(new AppError('Phone number, verification code, username, and PIN are required', 400));
       }
       
       // Find user with matching phone and code
@@ -137,7 +126,9 @@ export class AuthController {
         return next(new AppError('Invalid or expired verification code', 400));
       }
       
-      // Mark phone as verified and complete registration
+      // Complete registration with username and PIN
+      user.username = username;
+      user.pin = pin; // Let model handle hashing
       user.phoneVerified = true;
       user.pendingVerification = false;
       user.verificationCode = undefined;
@@ -147,14 +138,14 @@ export class AuthController {
       try {
         const settings = await Settings.findOne();
         if (settings && settings.welcomeBonusAmount > 0) {
-          // Initialize coinWallet if not exists
-          if (!user.coinWallet) {
-            user.coinWallet = { balance: 0, transactions: [] };
+          // Initialize wallet if not exists
+          if (!user.wallet) {
+            user.wallet = { balance: 0, bonusBalance: 0, transactions: [] };
           }
           
-          // Add welcome bonus
-          user.coinWallet.balance += settings.welcomeBonusAmount;
-          user.coinWallet.transactions.push({
+          // Add welcome bonus to bonusBalance
+          user.wallet.bonusBalance += settings.welcomeBonusAmount;
+          user.wallet.transactions.push({
             amount: settings.welcomeBonusAmount,
             type: 'welcome-bonus',
             description: 'Welcome to Cineranda!',
@@ -170,7 +161,11 @@ export class AuthController {
       // Generate token and send response
       const token = signToken((user._id as any).toString());
       
-      res.status(201).json({
+      // Get welcome bonus info for response
+      const settings = await Settings.findOne();
+      const welcomeBonusAmount = settings?.welcomeBonusAmount || 0;
+      
+      res.status(200).json({
         status: 'success',
         token,
         data: {
@@ -180,10 +175,13 @@ export class AuthController {
             phoneNumber: user.phoneNumber,
             role: user.role,
             phoneVerified: true,
-            coinWallet: {
-              balance: user.coinWallet?.balance || 0
+            wallet: {
+              balance: user.wallet?.balance || 0,
+              bonusBalance: user.wallet?.bonusBalance || 0,
+              totalBalance: (user.wallet?.balance || 0) + (user.wallet?.bonusBalance || 0)
             }
-          }
+          },
+          welcomeBonus: welcomeBonusAmount
         }
       });
     } catch (error) {
@@ -232,16 +230,24 @@ export class AuthController {
 
   login = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { identifier, pin } = req.body;
+      // Support both 'identifier' and 'phoneNumber' fields for backward compatibility
+      const { identifier, phoneNumber, pin } = req.body;
+      const loginIdentifier = identifier || phoneNumber;
       
-      if (!identifier || !pin) {
-        return next(new AppError('Identifier (username or phone) and PIN are required', 400));
+      if (!loginIdentifier || !pin) {
+        return next(new AppError('Phone number/username and PIN are required', 400));
       }
       
-      // We'll update the AuthService later
-      const result = await this.authService.login(identifier, pin);
+      const result = await this.authService.login(loginIdentifier, pin);
       
-      res.status(200).json({ status: 'success', ...result });
+      res.status(200).json({ 
+        status: 'success',
+        token: result.token,
+        refreshToken: result.refreshToken,
+        data: { 
+          user: result.user 
+        }
+      });
     } catch (error) {
       next(error);
     }
@@ -249,17 +255,31 @@ export class AuthController {
 
   refreshToken = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { refreshToken } = req.body;
+      // Get refresh token from Authorization header or request body
+      let refreshToken = req.body?.refreshToken;
+      
+      // If not in body, try to get from Authorization header
+      if (!refreshToken && req.headers.authorization) {
+        const bearerToken = req.headers.authorization.split(' ')[1];
+        if (bearerToken) {
+          refreshToken = bearerToken;
+        }
+      }
       
       if (!refreshToken) {
-        return next(new AppError('Refresh token is required', 400));
+        return next(new AppError('Refresh token is required', 401));
       }
       
       const result = await this.authService.refreshToken(refreshToken);
       
       res.status(200).json({
         status: 'success',
-        data: result
+        data: {
+          token: result.token,
+          refreshToken: result.refreshToken,
+          expiresIn: 86400, // 24 hours in seconds
+          tokenType: 'Bearer'
+        }
       });
     } catch (error) {
       next(error);
@@ -337,6 +357,18 @@ export class AuthController {
       const userId = req.user?._id;
       if (!userId) {
         return next(new AppError('User not found on request. Please log in again.', 401));
+      }
+
+      // Validate preferredLanguage if provided
+      const validLanguages = ['kinyarwanda', 'english', 'french'];
+      if (req.body.preferredLanguage && !validLanguages.includes(req.body.preferredLanguage)) {
+        return next(new AppError('Invalid language. Must be one of: kinyarwanda, english, french', 400));
+      }
+
+      // Validate theme if provided
+      const validThemes = ['light', 'dark'];
+      if (req.body.theme && !validThemes.includes(req.body.theme)) {
+        return next(new AppError('Invalid theme. Must be one of: light, dark', 400));
       }
       
       // Call the existing service method. It's safe for both users and admins.

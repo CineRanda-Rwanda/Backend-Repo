@@ -12,17 +12,27 @@ export class TestHelpers {
    * Create authenticated user with token
    */
   static async createTestUser(overrides: any = {}): Promise<{ user: IUser & { _id: Types.ObjectId }; token: string }> {
-    const hashedPin = await bcrypt.hash('1234', 10);
+    // Use a pre-hashed PIN to avoid double-hashing in model pre-save hook (performance optimization)
+    const hashedPin = await bcrypt.hash('1234', 1); // Reduced rounds for tests
+    
+    // Extract balance from overrides if provided, otherwise default to 10000
+    const walletBalance = overrides.balance !== undefined ? overrides.balance : 10000;
     
     const user = await User.create({
-      username: `user_${Date.now()}`,
+      username: `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       phoneNumber: `+25079${Math.floor(Math.random() * 10000000)}`,
       pin: hashedPin,
       role: 'user',
       location: 'international',
       isActive: true,
       phoneVerified: true,
-      balance: 10000,
+      pendingVerification: false, // Set to false so auth middleware allows access
+      balance: walletBalance, // Support legacy balance field
+      wallet: {
+        balance: walletBalance, // Use unified wallet with same balance
+        bonusBalance: 0,
+        transactions: []
+      },
       coinWallet: {
         balance: 500,
         transactions: []
@@ -43,8 +53,8 @@ export class TestHelpers {
    * Create admin user
    */
   static async createAdminUser(): Promise<{ admin: IUser & { _id: Types.ObjectId }; token: string }> {
-    const hashedPassword = await bcrypt.hash('Admin@123', 10);
-    const hashedPin = await bcrypt.hash('1234', 10);
+    const hashedPassword = await bcrypt.hash('Admin@123', 1); // Reduced rounds for tests
+    const hashedPin = await bcrypt.hash('1234', 1); // Reduced rounds for tests
 
     const admin = await User.create({
       username: `admin_${Date.now()}`,
@@ -106,9 +116,12 @@ export class TestHelpers {
       description: 'Test movie description',
       contentType: 'Movie',
       posterImageUrl: 'https://test.com/poster.jpg',
+      videoUrl: 'https://test.com/movie.mp4', // Required field
+      thumbnailUrl: 'https://test.com/thumbnail.jpg', // Required field
       movieFileUrl: 'https://test.com/movie.mp4',
       duration: 7200,
-      priceInRwf: 1000,
+      price: 1000, // New unified pricing field (RWF)
+      priceInRwf: 1000, // Keep legacy field for transition
       priceInCoins: 10,
       releaseYear: 2024,
       isPublished: true,
@@ -136,7 +149,8 @@ export class TestHelpers {
         duration: 3600,
         thumbnailUrl: `https://test.com/thumb${i}.jpg`,
         isFree: false,
-        priceInRwf: 500,
+        price: 500, // New unified pricing field (RWF)
+        priceInRwf: 500, // Keep legacy field
         priceInCoins: 5,
       });
     }
@@ -216,6 +230,7 @@ export class TestHelpers {
       duration: episodeData.duration || 3600,
       thumbnailUrl: episodeData.thumbnailUrl || 'https://test.com/new-thumb.jpg',
       isFree: episodeData.isFree || false,
+      price: episodeData.price || 500, // New unified pricing field
       priceInRwf: episodeData.priceInRwf || 500,
       priceInCoins: episodeData.priceInCoins || 5,
     };

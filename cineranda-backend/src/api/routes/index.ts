@@ -11,6 +11,10 @@ import watchHistoryRoutes from './watchHistory.routes';
 import ratingRoutes from './rating.routes';
 import favoriteRoutes from './favorite.routes';
 import paymentRoutes from './payment.routes';
+import libraryRoutes from './library.routes';
+import watchProgressRoutes from './watchProgress.routes';
+import notificationRoutes from './notification.routes';
+import analyticsRoutes from './analytics.routes';
 
 const router = Router();
 
@@ -29,5 +33,9 @@ router.use('/watch-history', watchHistoryRoutes);
 router.use('/ratings', ratingRoutes);
 router.use('/favorites', favoriteRoutes);
 router.use('/payments', paymentRoutes);
+router.use('/library', libraryRoutes);
+router.use('/watch-progress', watchProgressRoutes);
+router.use('/notifications', notificationRoutes);
+router.use('/admin/analytics', analyticsRoutes);
 
 export default router;

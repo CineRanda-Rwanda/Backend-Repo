@@ -62,6 +62,44 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
 };
 
 /**
+ * Optional authentication middleware - populates req.user if a valid token exists,
+ * but doesn't fail if there's no token or if the token is invalid.
+ * Used for routes that should work both authenticated and unauthenticated.
+ */
+export const optionalAuthenticate = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    let token;
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      token = req.headers.authorization.split(' ')[1];
+    }
+
+    // If no token, just continue without setting req.user
+    if (!token) {
+      return next();
+    }
+
+    try {
+      const decoded = jwt.verify(token, config.jwt.secret) as JwtPayload;
+      const currentUser = await User.findById(decoded.userId);
+
+      // Only populate req.user if we found a valid, active user
+      if (currentUser && currentUser.isActive !== false) {
+        // Skip pending verification check for optional auth
+        req.user = currentUser as unknown as (IUser & { _id: mongoose.Types.ObjectId });
+      }
+    } catch (jwtError) {
+      // Invalid or expired token - just continue without req.user
+      // Don't throw an error for optional authentication
+    }
+
+    next();
+  } catch (error) {
+    // For unexpected errors, still continue (fail gracefully)
+    next();
+  }
+};
+
+/**
  * Middleware to restrict access to admin users only.
  */
 export const restrictToAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {

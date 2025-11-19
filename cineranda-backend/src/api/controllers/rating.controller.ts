@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { Rating } from '../../data/models/rating.model';
+import { Content } from '../../data/models/movie.model';
 import { MovieRepository } from '../../data/repositories/movie.repository';
 import { AuthRequest } from '../../middleware/auth.middleware';
 import AppError from '../../utils/AppError';
@@ -19,24 +20,32 @@ export class RatingController {
         return next(new AppError('Authentication required', 401));
       }
       const userId = req.user._id as mongoose.Types.ObjectId;
-      const { movieId, rating, review } = req.body;
+      const { contentId, movieId, rating, review } = req.body;
       
-      if (!movieId || !rating) {
-        return next(new AppError('Movie ID and rating are required', 400));
+      // Support both contentId and movieId for backward compatibility
+      const actualContentId = contentId || movieId;
+      
+      if (!actualContentId || !rating) {
+        return next(new AppError('Content ID and rating are required', 400));
       }
       
       if (rating < 1 || rating > 5) {
         return next(new AppError('Rating must be between 1 and 5', 400));
       }
       
-      // Verify movie exists
-      const movie = await this.movieRepository.findById(movieId);
-      if (!movie) {
-        return next(new AppError('Movie not found', 404));
+      // Verify content exists
+      const content = await Content.findById(actualContentId);
+      if (!content) {
+        return next(new AppError('Content not found', 404));
       }
       
-      // Check if user already rated this movie
-      const existingRating = await Rating.findOne({ userId, movieId });
+      // Check if ratings are disabled for this content
+      if (content.ratingsEnabled === false) {
+        return next(new AppError('Ratings are disabled for this content', 403));
+      }
+      
+      // Check if user already rated this content
+      const existingRating = await Rating.findOne({ userId, movieId: actualContentId });
       
       if (existingRating) {
         // Update existing rating
@@ -54,13 +63,13 @@ export class RatingController {
         // Create new rating
         const newRating = await Rating.create({
           userId,
-          movieId,
+          movieId: actualContentId,
           rating,
           review
         });
         
-        // Update movie's average rating
-        await this.movieRepository.updateMovieRating(movieId, rating);
+        // Update content's average rating
+        await this.movieRepository.updateMovieRating(actualContentId, rating);
         
         res.status(201).json({
           status: 'success',
@@ -72,23 +81,23 @@ export class RatingController {
     }
   };
 
-  // Get ratings for a movie
+  // Get ratings for a content item
   getMovieRatings = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { movieId } = req.params;
+      const { contentId } = req.params;
       const page = parseInt(req.query.page as string) || 1;
       const limit = parseInt(req.query.limit as string) || 10;
       const skip = (page - 1) * limit;
       
-      // Get movie first to verify it exists
-      const movie = await this.movieRepository.findById(movieId);
-      if (!movie) {
-        return next(new AppError('Movie not found', 404));
+      // Get content first to verify it exists
+      const content = await Content.findById(contentId);
+      if (!content) {
+        return next(new AppError('Content not found', 404));
       }
       
-      // Get ratings with pagination
-      const total = await Rating.countDocuments({ movieId });
-      const ratings = await Rating.find({ movieId })
+      // Get ratings with pagination (movieId field in Rating model stores contentId)
+      const total = await Rating.countDocuments({ movieId: contentId });
+      const ratings = await Rating.find({ movieId: contentId })
         .populate('userId', 'username')
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -107,8 +116,8 @@ export class RatingController {
         },
         data: { 
           ratings,
-          averageRating: movie.averageRating,
-          ratingCount: movie.ratingCount
+          averageRating: content.averageRating,
+          totalRatings: content.ratingCount
         }
       });
     } catch (error) {
@@ -150,9 +159,9 @@ export class RatingController {
         return next(new AppError('Authentication required', 401));
       }
       const userId = req.user._id as mongoose.Types.ObjectId;
-      const { id } = req.params;
+      const { ratingId } = req.params;
       
-      const rating = await Rating.findById(id);
+      const rating = await Rating.findById(ratingId);
       
       if (!rating) {
         return next(new AppError('Rating not found', 404));

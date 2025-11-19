@@ -151,12 +151,9 @@ export class ContentController {
         trailerYoutubeLink: req.body.trailerYoutubeLink,
       };
       
-      // Add pricing if provided
-      if (req.body.priceInRwf) {
-        content.priceInRwf = parseInt(req.body.priceInRwf, 10);
-      }
-      if (req.body.priceInCoins) {
-        content.priceInCoins = parseInt(req.body.priceInCoins, 10);
+      // Add pricing if provided (RWF only)
+      if (req.body.price) {
+        content.price = parseInt(req.body.price, 10);
       }
       
       // Handle new fields: genres, categories, cast, releaseYear
@@ -481,7 +478,7 @@ export class ContentController {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .select('title description posterImageUrl releaseYear priceInRwf priceInCoins genres categories') // ✅ ADDED priceInRwf
+        .select('title description posterImageUrl releaseYear price genres categories contentType')
         .populate('genres')
         .populate('categories');
     
@@ -496,7 +493,7 @@ export class ContentController {
           page,
           pages: Math.ceil(totalMovies / limit)
         },
-        data: { movies: signedMovies }
+        data: { content: signedMovies }
       });
     } catch (error) {
       console.error('Error fetching movies:', error);
@@ -510,9 +507,9 @@ export class ContentController {
    */
   getMovieDetails = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { id } = req.params;
+      const { contentId } = req.params; // Changed from 'id' to 'contentId' to match route
       
-      const movie = await Content.findOne({ _id: id, contentType: 'Movie' })
+      const movie = await Content.findOne({ _id: contentId, contentType: 'Movie' })
         .populate('genres')
         .populate('categories');
       
@@ -530,12 +527,12 @@ export class ContentController {
           isPurchased = true;
         } else {
           // Check if user purchased this movie
-          const User = require('../data/models/user.model').User;
+          const User = require('../../data/models/user.model').User;
           const user = await User.findById(authReq.user._id);
           
           if (user) {
             isPurchased = user.purchasedContent?.some(
-              (pc: any) => pc.contentId.toString() === id
+              (pc: any) => pc.contentId.toString() === contentId
             );
           }
         }
@@ -543,7 +540,7 @@ export class ContentController {
         // Get watch progress
         const history = await this.watchHistoryRepository.findOne({ 
           user: authReq.user._id, 
-          content: id 
+          content: contentId 
         });
         
         if (history) {
@@ -561,7 +558,7 @@ export class ContentController {
       res.status(200).json({
         status: 'success',
         data: { 
-          movie: signedMovie,
+          content: signedMovie, // Changed from 'movie' to 'content' for consistency
           isPurchased,
           watchProgress
         }
@@ -575,6 +572,7 @@ export class ContentController {
   /**
    * Search movies (UPDATED: Returns signed URLs)
    * GET /api/v1/content/search/movies
+   * @deprecated Use advancedSearch instead
    */
   searchMovies = async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -593,7 +591,7 @@ export class ContentController {
           { cast: { $in: [new RegExp(query as string, 'i')] } }
         ]
       })
-      .select('title description posterImageUrl releaseYear priceInRwf priceInCoins') // ✅ Added priceInRwf
+      .select('title description posterImageUrl releaseYear price contentType')
       .populate('genres')
       .populate('categories');
       
@@ -602,10 +600,168 @@ export class ContentController {
       res.status(200).json({
         status: 'success',
         results: movies.length,
-        data: { movies: signedMovies }
+        data: { content: signedMovies }
       });
     } catch (error) {
       console.error('Error searching movies:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * Advanced content search with filters
+   * GET /api/v1/content/search
+   */
+  advancedSearch = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const {
+        q,
+        type,
+        genres,
+        categories,
+        minPrice,
+        maxPrice,
+        releaseYear,
+        rating,
+        sortBy = 'relevance',
+        sortOrder = 'desc',
+        page = '1',
+        limit = '20'
+      } = req.query;
+
+      // Validate search query
+      if (!q || (q as string).length < 2) {
+        return next(new AppError('Search query must be at least 2 characters', 400));
+      }
+
+      const pageNum = parseInt(page as string);
+      const limitNum = parseInt(limit as string);
+      const skip = (pageNum - 1) * limitNum;
+
+      // Build query
+      const query: any = {
+        isPublished: true,
+        $or: [
+          { title: { $regex: q, $options: 'i' } },
+          { description: { $regex: q, $options: 'i' } },
+          { cast: { $in: [new RegExp(q as string, 'i')] } }
+        ]
+      };
+
+      // Content type filter
+      if (type && ['Movie', 'Series'].includes(type as string)) {
+        query.contentType = type;
+      }
+
+      // Genre filter (comma-separated IDs)
+      if (genres) {
+        const genreIds = (genres as string).split(',');
+        query.genres = { $in: genreIds };
+      }
+
+      // Category filter (comma-separated IDs)
+      if (categories) {
+        const categoryIds = (categories as string).split(',');
+        query.categories = { $in: categoryIds };
+      }
+
+      // Price range filter
+      if (minPrice || maxPrice) {
+        query.price = {};
+        if (minPrice) query.price.$gte = parseFloat(minPrice as string);
+        if (maxPrice) query.price.$lte = parseFloat(maxPrice as string);
+      }
+
+      // Release year filter (single year or range "2020-2024")
+      if (releaseYear) {
+        const yearStr = releaseYear as string;
+        if (yearStr.includes('-')) {
+          const [startYear, endYear] = yearStr.split('-').map(y => parseInt(y));
+          query.releaseYear = { $gte: startYear, $lte: endYear };
+        } else {
+          query.releaseYear = parseInt(yearStr);
+        }
+      }
+
+      // Rating filter
+      if (rating) {
+        query.averageRating = { $gte: parseFloat(rating as string) };
+      }
+
+      // Build sort
+      let sort: any = {};
+      if (sortBy === 'relevance' && query.$text) {
+        // Only use text score if we're doing a text search
+        sort = { score: { $meta: 'textScore' } };
+      } else if (sortBy === 'title') {
+        sort.title = sortOrder === 'asc' ? 1 : -1;
+      } else if (sortBy === 'releaseYear') {
+        sort.releaseYear = sortOrder === 'asc' ? 1 : -1;
+      } else if (sortBy === 'price') {
+        sort.price = sortOrder === 'asc' ? 1 : -1;
+      } else if (sortBy === 'rating') {
+        sort.averageRating = sortOrder === 'asc' ? 1 : -1;
+      } else {
+        // Default sort when no valid sort specified
+        sort.createdAt = -1;
+      }
+
+      // Execute query
+      const [results, totalResults, availableGenres] = await Promise.all([
+        Content.find(query)
+          .select('title description posterImageUrl trailerYoutubeLink price duration releaseYear averageRating totalRatings genres categories cast isPublished isFeatured isFree contentType')
+          .populate('genres', 'name')
+          .populate('categories', 'name')
+          .sort(sort)
+          .skip(skip)
+          .limit(limitNum)
+          .lean(),
+        Content.countDocuments(query),
+        // Get available genres with counts for filter UI
+        Content.aggregate([
+          { $match: query },
+          { $unwind: '$genres' },
+          { $group: { _id: '$genres', count: { $sum: 1 } } },
+          { $lookup: { from: 'genres', localField: '_id', foreignField: '_id', as: 'genreInfo' } },
+          { $unwind: '$genreInfo' },
+          { $project: { _id: 1, name: '$genreInfo.name', count: 1 } },
+          { $sort: { count: -1 } },
+          { $limit: 10 }
+        ])
+      ]);
+
+      // Sign URLs
+      const signedResults = await this.signContentArray(results);
+
+      // Build applied filters summary
+      const appliedFilters: any = {};
+      if (type) appliedFilters.type = type;
+      if (genres) appliedFilters.genres = (genres as string).split(',');
+      if (categories) appliedFilters.categories = (categories as string).split(',');
+      if (minPrice) appliedFilters.minPrice = parseFloat(minPrice as string);
+      if (maxPrice) appliedFilters.maxPrice = parseFloat(maxPrice as string);
+      if (releaseYear) appliedFilters.releaseYear = releaseYear;
+      if (rating) appliedFilters.minRating = rating;
+
+      res.status(200).json({
+        status: 'success',
+        data: {
+          content: signedResults,
+          results: signedResults,
+          pagination: {
+            currentPage: pageNum,
+            totalPages: Math.ceil(totalResults / limitNum),
+            totalResults,
+            limit: limitNum
+          },
+          filters: {
+            appliedFilters,
+            availableGenres
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Error in advanced search:', error);
       next(error);
     }
   };
@@ -624,7 +780,7 @@ export class ContentController {
       res.status(200).json({
         status: 'success',
         results: movies.length,
-        data: { movies: signedMovies }
+        data: { content: signedMovies }
       });
     } catch (error) {
       next(error);
@@ -659,7 +815,7 @@ export class ContentController {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .select('title description posterImageUrl releaseYear priceInRwf priceInCoins seasons') // ✅ Added priceInRwf
+      .select('title description posterImageUrl releaseYear price seasons contentType')
       .populate('genres')
       .populate('categories');
       
@@ -711,7 +867,7 @@ export class ContentController {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .select('title description posterImageUrl releaseYear priceInRwf priceInCoins genres categories') // ✅ Added priceInRwf
+        .select('title description posterImageUrl releaseYear price genres categories contentType')
         .populate('genres')
         .populate('categories');
     
@@ -727,7 +883,7 @@ export class ContentController {
           limit
         },
         genre: genre.name,
-        data: { movies: signedMovies }
+        data: { content: signedMovies }
       });
     } catch (error) {
       console.error('Error fetching movies by genre:', error);
@@ -765,7 +921,7 @@ export class ContentController {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .select('title description posterImageUrl releaseYear priceInRwf priceInCoins genres categories') // ✅ Added priceInRwf
+        .select('title description posterImageUrl releaseYear price genres categories contentType')
         .populate('genres')
         .populate('categories');
     
@@ -781,7 +937,7 @@ export class ContentController {
           limit
         },
         category: category.name,
-        data: { movies: signedMovies }
+        data: { content: signedMovies }
       });
     } catch (error) {
       console.error('Error fetching movies by category:', error);
@@ -800,7 +956,7 @@ export class ContentController {
         return next(new AppError('Authentication required', 401));
       }
 
-      const User = require('../data/models/user.model').User;
+      const User = require('../../data/models/user.model').User;
       const user = await User.findById(authReq.user._id).select('purchasedContent');
       
       if (!user || !user.purchasedContent) {
@@ -827,7 +983,7 @@ export class ContentController {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .select('title description posterImageUrl releaseYear genres categories')
+        .select('title description posterImageUrl releaseYear genres categories contentType')
         .populate('genres')
         .populate('categories');
       
@@ -864,7 +1020,7 @@ export class ContentController {
         contentType: 'Series',
         isPublished: true 
       })
-        .select('title description posterImageUrl releaseYear totalSeriesPriceInRwf discountedSeriesPriceInRwf seriesDiscountPercent seasons')
+        .select('title description posterImageUrl releaseYear totalSeriesPrice discountedSeriesPrice seriesDiscountPercent seasons contentType')
         .populate('genres', 'name')
         .populate('categories', 'name')
         .skip(skip)
@@ -898,8 +1054,8 @@ export class ContentController {
           description: s.description,
           posterImageUrl: s.posterImageUrl,
           releaseYear: s.releaseYear,
-          totalSeriesPriceInRwf: s.totalSeriesPriceInRwf,
-          discountedSeriesPriceInRwf: s.discountedSeriesPriceInRwf,
+          totalSeriesPrice: s.totalSeriesPrice,
+          discountedSeriesPrice: s.discountedSeriesPrice,
           seriesDiscountPercent: s.seriesDiscountPercent,
           genres: s.genres,
           categories: s.categories,
@@ -963,7 +1119,7 @@ export class ContentController {
             }
           }
         } else {
-          const User = require('../data/models/user.model').User;
+          const User = require('../../data/models/user.model').User;
           const user = await User.findById(authReq.user._id);
           
           if (user) {
@@ -972,8 +1128,12 @@ export class ContentController {
             );
 
             if (seriesPurchase) {
-              userAccess.isPurchased = true;
-              userAccess.unlockedEpisodes = seriesPurchase.episodeIdsAtPurchase || [];
+              // Check if episodeIdsAtPurchase exists and has episodes
+              // If array exists (even if empty for full series purchase), consider it purchased
+              if (seriesPurchase.episodeIdsAtPurchase && Array.isArray(seriesPurchase.episodeIdsAtPurchase)) {
+                userAccess.isPurchased = true;
+                userAccess.unlockedEpisodes = seriesPurchase.episodeIdsAtPurchase;
+              }
             }
 
             const purchasedEpisodeIds = user.purchasedEpisodes
@@ -1055,7 +1215,7 @@ export class ContentController {
           userAccess.isPurchased = true;
           userAccess.unlockedEpisodes = season.episodes.map((ep: any) => ep._id.toString());
         } else {
-          const User = require('../data/models/user.model').User;
+          const User = require('../../data/models/user.model').User;
           const user = await User.findById(authReq.user._id);
           
           if (user) {
@@ -1161,7 +1321,7 @@ export class ContentController {
         if (authReq.user.role === 'admin') {
           isUnlocked = true;
         } else if (!isUnlocked) {
-          const User = require('../data/models/user.model').User;
+          const User = require('../../data/models/user.model').User;
           const user = await User.findById(authReq.user._id);
           
           if (user) {
@@ -1467,7 +1627,7 @@ export class ContentController {
         return next(new AppError('Authentication required', 401));
       }
 
-      const User = require('../data/models/user.model').User;
+      const User = require('../../data/models/user.model').User;
       const user = await User.findById(authReq.user._id).select('purchasedContent purchasedEpisodes');
       
       if (!user) {
@@ -1489,11 +1649,21 @@ export class ContentController {
       // Sign all URLs using existing helper
       const signedContent = await this.signContentArray(unlockedContent);
 
+      // Separate by content type
+      const movies = signedContent.filter((c: any) => c.contentType === 'Movie');
+      const series = signedContent.filter((c: any) => c.contentType === 'Series');
+
       res.status(200).json({
         status: 'success',
-        results: unlockedContent.length,
+        results: {
+          total: unlockedContent.length,
+          movies: movies.length,
+          series: series.length
+        },
         data: {
           content: signedContent,
+          movies,
+          series,
           purchasedEpisodes: user.purchasedEpisodes || []
         }
       });
@@ -1540,25 +1710,29 @@ export class ContentController {
         return next(new AppError('Episode number and title are required', 400));
       }
 
-      // ✅ IMPROVED: Check with detailed error
-      if (!files.videoFile || !files.videoFile[0]) {
-        console.error('❌ VIDEO FILE NOT FOUND!');
+      // ✅ IMPROVED: Allow either file upload or videoUrl (for tests)
+      if (!files.videoFile && !req.body.videoUrl) {
+        console.error('❌ VIDEO FILE OR VIDEO URL NOT PROVIDED!');
         console.error('Available file fields:', Object.keys(files));
         
         // Return detailed error for debugging
         return res.status(400).json({
           status: 'fail',
-          message: 'Episode video file is required',
+          message: 'Either video file upload or videoUrl is required',
           debug: {
             receivedFields: Object.keys(files),
             expectedField: 'videoFile',
             bodyFields: Object.keys(req.body),
-            hint: 'Make sure the form field name is exactly "videoFile" (case-sensitive)'
+            hint: 'Provide either a videoFile upload or a videoUrl in the body'
           }
         });
       }
 
-      console.log('✅ Video file found:', files.videoFile[0].originalname);
+      if (files.videoFile && files.videoFile[0]) {
+        console.log('✅ Video file found:', files.videoFile[0].originalname);
+      } else {
+        console.log('✅ Video URL provided:', req.body.videoUrl);
+      }
 
       // Find series
       const series = await Content.findOne({
@@ -1589,10 +1763,15 @@ export class ContentController {
 
       console.log('🔄 Uploading video to S3...');
 
-      // Upload video file using existing S3 service
-      const videoUrl = await this.s3Service.uploadFile(files.videoFile[0], 'videos');
-
-      console.log('✅ Video uploaded:', videoUrl);
+      // Upload video file using existing S3 service (if provided)
+      let videoUrl = req.body.videoUrl; // Use provided URL as fallback
+      
+      if (files.videoFile?.[0]) {
+        videoUrl = await this.s3Service.uploadFile(files.videoFile[0], 'videos');
+        console.log('✅ Video uploaded:', videoUrl);
+      } else {
+        console.log('✅ Using provided video URL:', videoUrl);
+      }
 
       // Upload thumbnail if provided
       let thumbnailUrl;
@@ -1630,8 +1809,7 @@ export class ContentController {
       // Add optional fields
       if (thumbnailUrl) newEpisode.thumbnailUrl = thumbnailUrl;
       if (Object.keys(subtitles).length > 0) newEpisode.subtitles = subtitles;
-      if (req.body.priceInRwf) newEpisode.priceInRwf = parseInt(req.body.priceInRwf);
-      if (req.body.priceInCoins) newEpisode.priceInCoins = parseInt(req.body.priceInCoins);
+      if (req.body.price) newEpisode.price = parseInt(req.body.price);
       if (req.body.trailerYoutubeLink) newEpisode.trailerYoutubeLink = req.body.trailerYoutubeLink;  // ✅ ADD THIS LINE
       if (req.body.isPublished !== undefined) newEpisode.isPublished = req.body.isPublished === 'true';  // ✅ ADD THIS LINE
 
@@ -1720,8 +1898,7 @@ export class ContentController {
       if (req.body.description !== undefined) episode.description = req.body.description;
       if (req.body.duration !== undefined) episode.duration = parseInt(req.body.duration);
       if (req.body.isFree !== undefined) episode.isFree = req.body.isFree === 'true';
-      if (req.body.priceInRwf !== undefined) episode.priceInRwf = parseInt(req.body.priceInRwf);
-      if (req.body.priceInCoins !== undefined) episode.priceInCoins = parseInt(req.body.priceInCoins);
+      if (req.body.price !== undefined) episode.price = parseInt(req.body.price);
       if (req.body.trailerYoutubeLink !== undefined) {
         episode.trailerYoutubeLink = req.body.trailerYoutubeLink;
         console.log('✅ Setting trailerYoutubeLink to:', req.body.trailerYoutubeLink);
@@ -1984,7 +2161,7 @@ export class ContentController {
         .limit(limit)
         .populate('genres', 'name')
         .populate('categories', 'name')
-        .select('title description posterImageUrl movieFileUrl trailerYoutubeLink releaseYear duration priceInRwf priceInCoins isFree isPublished genres categories createdAt updatedAt');
+        .select('title description posterImageUrl movieFileUrl trailerYoutubeLink releaseYear duration price isFree isPublished genres categories contentType createdAt updatedAt');
 
       // Sign URLs for movies
       const signedMovies = await this.signContentArray(movies);
@@ -2047,7 +2224,7 @@ export class ContentController {
         .limit(limit)
         .populate('genres', 'name')
         .populate('categories', 'name')
-        .select('title description posterImageUrl trailerYoutubeLink releaseYear priceInRwf priceInCoins isFree isPublished totalSeriesPriceInRwf discountedSeriesPriceInRwf seriesDiscountPercent genres categories seasons createdAt updatedAt');
+        .select('title description posterImageUrl trailerYoutubeLink releaseYear price isFree isPublished totalSeriesPrice discountedSeriesPrice seriesDiscountPercent genres categories seasons contentType createdAt updatedAt');
 
       // Sign URLs for series and episodes
       const signedSeries = await Promise.all(
@@ -2076,8 +2253,7 @@ export class ContentController {
                         duration: episode.duration,
                         isFree: Boolean(episode.isFree),
                         isPublished: episode.isPublished !== undefined ? Boolean(episode.isPublished) : true,
-                        priceInRwf: episode.priceInRwf || 0,
-                        priceInCoins: episode.priceInCoins || 0,
+                        price: episode.price || 0,
                         releaseDate: episode.releaseDate,
                         createdAt: episode.createdAt,
                         updatedAt: episode.updatedAt,
@@ -2185,6 +2361,227 @@ export class ContentController {
       next(error);
     }
   };
+
+  /**
+   * PUBLIC: Get movie trailer (no authentication required)
+   * GET /api/v1/content/movies/:id/trailer
+   */
+  getMovieTrailer = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+
+      const movie = await Content.findOne({ 
+        _id: id, 
+        contentType: 'Movie',
+        isPublished: true 
+      })
+        .select('title description posterImageUrl trailerYoutubeLink releaseYear duration')
+        .populate('genres', 'name')
+        .populate('categories', 'name');
+
+      if (!movie) {
+        return next(new AppError('Movie not found or not published', 404));
+      }
+
+      // Convert to plain object
+      const movieObj = movie.toObject();
+
+      // Sign poster image URL
+      let signedPosterUrl = movieObj.posterImageUrl;
+      if (signedPosterUrl) {
+        signedPosterUrl = await this.s3Service.getSignedUrl(signedPosterUrl, 86400);
+      }
+
+      res.status(200).json({
+        status: 'success',
+        data: {
+          movie: {
+            _id: movieObj._id,
+            contentType: 'Movie',
+            title: movieObj.title,
+            description: movieObj.description,
+            posterImageUrl: signedPosterUrl,
+            trailerYoutubeLink: movieObj.trailerYoutubeLink,
+            releaseYear: movieObj.releaseYear,
+            duration: movieObj.duration,
+            genres: movieObj.genres,
+            categories: movieObj.categories
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching movie trailer:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * PUBLIC: Get episode trailer (no authentication required)
+   * GET /api/v1/content/series/:seriesId/seasons/:seasonNumber/episodes/:episodeId/trailer
+   */
+  getEpisodeTrailer = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { seriesId, seasonNumber, episodeId } = req.params;
+
+      const series = await Content.findOne({ 
+        _id: seriesId, 
+        contentType: 'Series',
+        isPublished: true 
+      })
+        .select('title description posterImageUrl releaseYear seasons')
+        .populate('genres', 'name')
+        .populate('categories', 'name');
+
+      if (!series) {
+        return next(new AppError('Series not found or not published', 404));
+      }
+
+      // Find the specific season
+      const season = series.seasons?.find((s: any) => s.seasonNumber === parseInt(seasonNumber));
+      if (!season) {
+        return next(new AppError('Season not found', 404));
+      }
+
+      // Find the specific episode
+      const episode = season.episodes.find((e: any) => e._id.toString() === episodeId);
+      if (!episode) {
+        return next(new AppError('Episode not found', 404));
+      }
+
+      // Check if episode is published
+      if (episode.isPublished === false) {
+        return next(new AppError('Episode not available', 404));
+      }
+
+      // Convert to plain object
+      const seriesObj = series.toObject();
+
+      // Sign poster image URL
+      let signedPosterUrl = seriesObj.posterImageUrl;
+      if (signedPosterUrl) {
+        signedPosterUrl = await this.s3Service.getSignedUrl(signedPosterUrl, 86400);
+      }
+
+      // Sign episode thumbnail if exists
+      let signedThumbnailUrl = episode.thumbnailUrl;
+      if (signedThumbnailUrl) {
+        signedThumbnailUrl = await this.s3Service.getSignedUrl(signedThumbnailUrl, 86400);
+      }
+
+      res.status(200).json({
+        status: 'success',
+        data: {
+          trailer: {
+            contentId: seriesObj._id,
+            contentType: 'Episode',
+            seriesTitle: seriesObj.title,
+            seriesDescription: seriesObj.description,
+            seriesPosterImageUrl: signedPosterUrl,
+            seasonNumber: season.seasonNumber,
+            episodeNumber: episode.episodeNumber,
+            episodeTitle: episode.title,
+            episodeDescription: episode.description,
+            episodeThumbnailUrl: signedThumbnailUrl,
+            trailerYoutubeLink: episode.trailerYoutubeLink,
+            duration: episode.duration,
+            genres: seriesObj.genres,
+            categories: seriesObj.categories
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching episode trailer:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * ADMIN: Toggle ratings for a single content item
+   * PATCH /api/v1/admin/content/:id/ratings
+   */
+  toggleContentRatings = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+      const { ratingsEnabled } = req.body;
+
+      if (typeof ratingsEnabled !== 'boolean') {
+        return next(new AppError('ratingsEnabled must be a boolean value', 400));
+      }
+
+      const content = await Content.findById(id);
+      if (!content) {
+        return next(new AppError('Content not found', 404));
+      }
+
+      content.ratingsEnabled = ratingsEnabled;
+      await content.save();
+
+      res.status(200).json({
+        status: 'success',
+        message: `Ratings ${ratingsEnabled ? 'enabled' : 'disabled'} for "${content.title}"`,
+        data: {
+          content: {
+            _id: content._id,
+            title: content.title,
+            contentType: content.contentType,
+            ratingsEnabled: content.ratingsEnabled
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Error toggling content ratings:', error);
+      next(error);
+    }
+  };
+
+  /**
+   * ADMIN: Toggle ratings for multiple content items at once
+   * PATCH /api/v1/admin/content/batch-ratings
+   */
+  batchToggleRatings = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { contentIds, ratingsEnabled } = req.body;
+
+      if (!Array.isArray(contentIds) || contentIds.length === 0) {
+        return next(new AppError('contentIds must be a non-empty array', 400));
+      }
+
+      if (typeof ratingsEnabled !== 'boolean') {
+        return next(new AppError('ratingsEnabled must be a boolean value', 400));
+      }
+
+      // Update multiple content items
+      const result = await Content.updateMany(
+        { _id: { $in: contentIds } },
+        { $set: { ratingsEnabled } }
+      );
+
+      // Fetch updated content for response
+      const updatedContent = await Content.find(
+        { _id: { $in: contentIds } },
+        'title contentType ratingsEnabled'
+      );
+
+      res.status(200).json({
+        status: 'success',
+        message: `Ratings ${ratingsEnabled ? 'enabled' : 'disabled'} for ${result.modifiedCount} content item(s)`,
+        data: {
+          updatedCount: result.modifiedCount,
+          matchedCount: result.matchedCount,
+          ratingsEnabled,
+          updatedContent: updatedContent.map(c => ({
+            _id: c._id,
+            title: c.title,
+            contentType: c.contentType,
+            ratingsEnabled: c.ratingsEnabled
+          }))
+        }
+      });
+    } catch (error) {
+      console.error('Error batch toggling ratings:', error);
+      next(error);
+    }
+  };
 }
 
 interface SeriesAdminResponse {
@@ -2194,8 +2591,7 @@ interface SeriesAdminResponse {
   posterImageUrl?: string;
   trailerYoutubeLink?: string;
   releaseYear?: number;
-  priceInRwf?: number;
-  priceInCoins?: number;
+  price?: number;
   isFree?: boolean;
   isPublished?: boolean;
   genres?: any[];

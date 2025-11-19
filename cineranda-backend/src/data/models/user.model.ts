@@ -4,15 +4,9 @@ import bcrypt from 'bcryptjs';
 // Define transaction interface
 interface Transaction {
   amount: number;
-  type: 'welcome-bonus' | 'admin-adjustment' | 'purchase' | 'refund';
+  type: 'welcome-bonus' | 'admin-adjustment' | 'purchase' | 'refund' | 'topup' | 'bonus';
   description?: string;
   createdAt: Date;
-}
-
-// Define coin wallet interface
-interface CoinWallet {
-  balance: number;
-  transactions: Transaction[];
 }
 
 // User interface
@@ -47,6 +41,7 @@ export interface IUser extends Document {
     expiryDate?: Date;
     price: number;
     currency: string;
+    episodeIdsAtPurchase?: mongoose.Types.ObjectId[] | string[];
   }>;
   purchasedEpisodes?: Array<{
     contentId: mongoose.Types.ObjectId;
@@ -55,9 +50,23 @@ export interface IUser extends Document {
     price: number;
     currency: string;
   }>;
+  purchasedSeasons?: Array<{
+    contentId: mongoose.Types.ObjectId;
+    seasonId: mongoose.Types.ObjectId;
+    seasonNumber: number;
+    purchaseDate: Date;
+    price: number;
+    currency: string;
+    episodeIdsAtPurchase?: mongoose.Types.ObjectId[] | string[];
+  }>;
   preferredLanguage?: 'kinyarwanda' | 'english' | 'french';
   theme?: 'light' | 'dark';
-  coinWallet?: CoinWallet;
+  // Unified wallet structure (RWF)
+  wallet: {
+    balance: number;
+    bonusBalance: number;
+    transactions: Transaction[];
+  };
   isTwoFactorEnabled?: boolean;
   twoFactorSecret?: string;
   pendingVerification?: boolean;
@@ -74,7 +83,9 @@ export interface IUser extends Document {
   }>;
   comparePassword(candidatePassword: string): Promise<boolean>;
   comparePin(candidatePin: string): Promise<boolean>;
-  addCoins(amount: number, type: string, description?: string): Promise<IUser>;
+  addToWallet(amount: number, type: string, description?: string, asBonus?: boolean): Promise<IUser>;
+  deductFromWallet(amount: number, type: string, description?: string): Promise<IUser>;
+  getTotalBalance(): number;
 }
 
 // User schema
@@ -82,8 +93,11 @@ const userSchema = new Schema<IUser>(
   {
     username: {
       type: String,
-      required: true,
+      required: function(this: IUser) {
+        return !this.pendingVerification;
+      },
       unique: true,
+      sparse: true,
       trim: true,
     },
     email: {
@@ -105,7 +119,9 @@ const userSchema = new Schema<IUser>(
     },
     pin: {
       type: String,
-      required: true,
+      required: function(this: IUser) {
+        return !this.pendingVerification;
+      },
       select: false,
     },
     firstName: {
@@ -156,6 +172,7 @@ const userSchema = new Schema<IUser>(
         expiryDate: { type: Date },
         price: { type: Number, required: true },
         currency: { type: String, required: true, default: 'RWF' },
+        episodeIdsAtPurchase: [{ type: String }],
       },
     ],
     purchasedEpisodes: [
@@ -167,6 +184,17 @@ const userSchema = new Schema<IUser>(
         currency: { type: String, required: true, default: 'RWF' },
       },
     ],
+    purchasedSeasons: [
+      {
+        contentId: { type: mongoose.Types.ObjectId, ref: 'Content', required: true },
+        seasonId: { type: mongoose.Types.ObjectId, required: true },
+        seasonNumber: { type: Number, required: true },
+        purchaseDate: { type: Date, required: true, default: Date.now },
+        price: { type: Number, required: true },
+        currency: { type: String, required: true, default: 'RWF' },
+        episodeIdsAtPurchase: [{ type: String }],
+      },
+    ],
     preferredLanguage: {
       type: String,
       enum: ['kinyarwanda', 'english', 'french'],
@@ -175,23 +203,25 @@ const userSchema = new Schema<IUser>(
       type: String,
       enum: ['light', 'dark'],
     },
-    coinWallet: {
+    // Unified wallet (RWF only)
+    wallet: {
       type: {
-        balance: { type: Number, default: 0 },
+        balance: { type: Number, default: 0, min: 0 },
+        bonusBalance: { type: Number, default: 0, min: 0 },
         transactions: [
           {
             amount: { type: Number, required: true },
-            type: {
-              type: String,
-              enum: ['welcome-bonus', 'admin-adjustment', 'purchase', 'refund'],
-              required: true,
+            type: { 
+              type: String, 
+              enum: ['welcome-bonus', 'admin-adjustment', 'purchase', 'refund', 'topup', 'bonus'],
+              required: true 
             },
             description: { type: String },
-            createdAt: { type: Date, default: Date.now },
-          },
-        ],
+            createdAt: { type: Date, default: Date.now }
+          }
+        ]
       },
-      default: {},
+      default: () => ({ balance: 0, bonusBalance: 0, transactions: [] })
     },
     pinResetCode: {
       type: String,
@@ -263,13 +293,11 @@ const userSchema = new Schema<IUser>(
   }
 );
 
-// ADDED: Indexes for better query performance
-userSchema.index({ username: 1 });
-userSchema.index({ email: 1 });
-userSchema.index({ phoneNumber: 1 });
+// Indexes for better query performance (username, email, phoneNumber already indexed via unique: true)
 userSchema.index({ 'purchasedContent.contentId': 1 });
 userSchema.index({ 'purchasedEpisodes.episodeId': 1 });
 userSchema.index({ 'purchasedEpisodes.contentId': 1 });
+userSchema.index({ 'purchasedSeasons.seasonId': 1 });
 
 // Password hashing middleware
 userSchema.pre<IUser>('save', async function (next) {
@@ -309,25 +337,80 @@ userSchema.methods.comparePin = async function (
   return await bcrypt.compare(candidatePin, this.pin);
 };
 
-// Add a method to add coins to wallet (KEPT for backward compatibility)
-userSchema.methods.addCoins = async function (
-  amount: number,
-  type: string,
-  description: string = ''
+// Add to wallet: credit balance (regular) or bonusBalance
+userSchema.methods.addToWallet = async function(
+  amount: number, 
+  type: string, 
+  description = '', 
+  asBonus = false
 ) {
-  if (!this.coinWallet) {
-    this.coinWallet = { balance: 0, transactions: [] };
+  if (!this.wallet) {
+    this.wallet = { balance: 0, bonusBalance: 0, transactions: [] };
   }
 
-  this.coinWallet.balance += amount;
-  this.coinWallet.transactions.push({
-    amount,
-    type,
-    description,
-    createdAt: new Date(),
-  });
+  if (asBonus) {
+    this.wallet.bonusBalance = (this.wallet.bonusBalance || 0) + amount;
+  } else {
+    this.wallet.balance = (this.wallet.balance || 0) + amount;
+  }
 
+  this.wallet.transactions.push({ 
+    amount, 
+    type, 
+    description, 
+    createdAt: new Date() 
+  });
+  
   return this.save();
+};
+
+// Deduct from wallet: use bonusBalance first, then balance
+userSchema.methods.deductFromWallet = async function(
+  amount: number, 
+  type: string, 
+  description = ''
+) {
+  if (!this.wallet) {
+    throw new Error('Insufficient balance');
+  }
+
+  let remaining = amount;
+  const bonus = this.wallet.bonusBalance || 0;
+  
+  // Use bonus balance first
+  if (bonus >= remaining) {
+    this.wallet.bonusBalance = bonus - remaining;
+    remaining = 0;
+  } else {
+    remaining -= bonus;
+    this.wallet.bonusBalance = 0;
+  }
+
+  // Then use regular balance
+  if (remaining > 0) {
+    const bal = this.wallet.balance || 0;
+    if (bal < remaining) {
+      throw new Error('Insufficient balance');
+    }
+    this.wallet.balance = bal - remaining;
+  }
+
+  this.wallet.transactions.push({ 
+    amount: -amount, 
+    type, 
+    description, 
+    createdAt: new Date() 
+  });
+  
+  return await this.save();
+};
+
+// Get total balance (regular + bonus)
+userSchema.methods.getTotalBalance = function() {
+  if (!this.wallet) {
+    return 0;
+  }
+  return (this.wallet.balance || 0) + (this.wallet.bonusBalance || 0);
 };
 
 // Create the model

@@ -9,6 +9,9 @@ const authController = new AuthController();
 // Register endpoint (now just starts the process)
 router.post('/register', authController.register);
 
+// Alias for register - request verification code
+router.post('/request-verification', authController.register);
+
 // Complete registration with verification
 router.post('/verify-registration', authController.verifyAndCompleteRegistration);
 
@@ -18,7 +21,7 @@ router.post('/resend-code', authController.resendVerificationCode);
 // Other existing auth routes
 router.post('/login', authController.login);
 router.post('/admin/login', authController.adminLogin);
-router.post('/refresh-token', authController.refreshToken);
+router.post('/admin/refresh-token', authController.refreshToken);
 router.get('/verify-phone', authController.verifyPhone);
 router.post('/forgot-password', authController.forgotPassword);
 router.post('/reset-password', authController.resetPassword);

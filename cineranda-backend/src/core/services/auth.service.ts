@@ -170,8 +170,16 @@ export class AuthService {
 
   async refreshToken(refreshToken: string): Promise<{ token: string; refreshToken: string }> {
     try {
-      // Verify refresh token
-      const decoded = jwt.verify(refreshToken, config.jwt.refreshSecret) as { userId: string };
+      let decoded: { userId: string };
+      
+      // Try to verify as refresh token first
+      try {
+        decoded = jwt.verify(refreshToken, config.jwt.refreshSecret) as { userId: string };
+      } catch (refreshError) {
+        // If refresh token verification fails, try as access token
+        // This allows using access tokens to get new tokens (common pattern)
+        decoded = jwt.verify(refreshToken, config.jwt.secret) as { userId: string };
+      }
       
       // Get user - explicitly type as UserWithId
       const user = await this.userRepository.findById(decoded.userId) as UserWithId;

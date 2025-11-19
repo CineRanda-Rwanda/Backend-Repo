@@ -5,13 +5,11 @@ import { authenticate } from '../../middleware/auth.middleware';
 const router = Router();
 const ratingController = new RatingController();
 
-// Public routes
-router.get('/movie/:movieId', ratingController.getMovieRatings);
+// Public routes - anyone can view ratings
+router.get('/:contentId', ratingController.getMovieRatings);
 
-// Authenticated routes
-router.use(authenticate);
-router.post('/', ratingController.submitRating);
-router.get('/movie/:movieId/user', ratingController.getUserRatingForMovie);
-router.delete('/:id', ratingController.deleteRating);
+// Authenticated routes - require login
+router.post('/', authenticate, ratingController.submitRating);
+router.delete('/:ratingId', authenticate, ratingController.deleteRating);
 
 export default router;

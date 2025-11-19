@@ -34,8 +34,7 @@ export class PaymentService {
     user: IUser,
     contentId: string,
     contentTitle: string,
-    amountInRwf: number,
-    coinAmount: number
+    amountInRwf: number
   ): Promise<AugmentedResponse> {
     const txRef = `CINE-${v4()}`;
     const userId = String(user._id);
@@ -57,7 +56,6 @@ export class PaymentService {
       },
       meta: {
         contentId,
-        coinAmount,
         userId,
         type: 'content'
       }

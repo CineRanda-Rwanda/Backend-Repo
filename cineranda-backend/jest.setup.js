@@ -3,8 +3,8 @@
 
 console.log('Jest setup file loaded');
 
-// Example: setting global timeout
-jest.setTimeout(10000);
+// Increase timeout for MongoDB memory server and bcrypt operations
+jest.setTimeout(60000); // 60 seconds
 
 module.exports = async () => {
   // Setup code for Jest tests can be added here
