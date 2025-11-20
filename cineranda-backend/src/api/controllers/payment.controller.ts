@@ -3,10 +3,11 @@ import { Request, Response, NextFunction } from 'express';
 import { PaymentService } from '../../core/services/payment.service';
 import { PaymentRepository } from '../../data/repositories/payment.repository';
 import { AuthRequest } from '../../middleware/auth.middleware';
-import { Content } from '../../data/models/movie.model';
+import { Content, IContent } from '../../data/models/movie.model';
 import { User } from '../../data/models/user.model';
 import AppError from '../../utils/AppError';
 import config from '../../config';
+import { resolvePriceFromFields } from '../../utils/pricing';
 
 export class PaymentController {
   private paymentService: PaymentService;
@@ -18,16 +19,89 @@ export class PaymentController {
   }
 
   /**
-   * Helper method to get correct pricing for content (RWF only)
+   * Normalize numeric values read from Mongo (handles undefined/null/strings)
    */
-  private getContentPricing(content: any): number {
+  private normalizePrice(value: unknown): number {
+    const parsed = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  private getUnifiedPrice(source: any): number {
+    const resolved = resolvePriceFromFields({
+      price: source?.price,
+      priceInRwf: source?.priceInRwf,
+      priceInCoins: source?.priceInCoins
+    });
+    return resolved ?? 0;
+  }
+
+  /**
+   * Calculate total and discounted price for a series by summing paid episodes
+   */
+  private calculateSeriesPricing(content: IContent): { total: number; discounted: number } {
+    const seasons = Array.isArray(content.seasons) ? content.seasons : [];
+
+    const total = seasons.reduce((seasonAcc, season) => {
+      const episodes = Array.isArray(season?.episodes) ? season.episodes : [];
+      const episodeSum = episodes.reduce((episodeAcc, episode) => {
+        if (!episode || episode.isFree) {
+          return episodeAcc;
+        }
+        const episodePrice = this.getUnifiedPrice(episode);
+        return episodeAcc + Math.max(episodePrice, 0);
+      }, 0);
+      return seasonAcc + episodeSum;
+    }, 0);
+
+    const rawDiscount = this.normalizePrice(content.seriesDiscountPercent);
+    const discountPercent = Math.min(Math.max(rawDiscount, 0), 100);
+    const discounted = discountPercent > 0 ? Math.round(total * (1 - discountPercent / 100)) : total;
+
+    return { total, discounted };
+  }
+
+  /**
+   * Ensure pricing is available for purchases. Recalculates series totals when missing.
+   */
+  private async ensureContentPricing(content: IContent): Promise<number> {
     if (content.contentType === 'Movie') {
-      return content.price || 0;
-    } else if (content.contentType === 'Series') {
-      // Use discounted price for series (already includes discount if set)
-      return content.discountedSeriesPrice || content.totalSeriesPrice || 0;
+      const moviePrice = this.getUnifiedPrice(content);
+      return moviePrice > 0 ? moviePrice : 0;
     }
-    
+
+    if (content.contentType === 'Series') {
+      const storedDiscounted = this.getUnifiedPrice({
+        price: content.discountedSeriesPrice,
+        priceInRwf: (content as any).discountedSeriesPriceInRwf,
+        priceInCoins: (content as any).discountedSeriesPriceInCoins
+      });
+      const storedTotal = this.getUnifiedPrice({
+        price: content.totalSeriesPrice,
+        priceInRwf: (content as any).totalSeriesPriceInRwf,
+        priceInCoins: (content as any).totalSeriesPriceInCoins
+      });
+
+      if (storedDiscounted > 0) {
+        // Backfill missing total if needed
+        if (storedTotal <= 0) {
+          const { total } = this.calculateSeriesPricing(content);
+          if (total > 0) {
+            content.totalSeriesPrice = total;
+            await content.save();
+          }
+        }
+        return storedDiscounted;
+      }
+
+      const { total, discounted } = this.calculateSeriesPricing(content);
+      if (discounted > 0) {
+        content.totalSeriesPrice = total;
+        content.discountedSeriesPrice = discounted;
+        await content.save();
+        return discounted;
+      }
+    }
+
     return 0;
   }
 
@@ -53,7 +127,7 @@ export class PaymentController {
       }
 
       // Get correct pricing based on content type (RWF only)
-      const price = this.getContentPricing(content);
+      const price = await this.ensureContentPricing(content);
 
       if (price <= 0) {
         return next(new AppError('Invalid content pricing', 400));
@@ -239,7 +313,7 @@ export class PaymentController {
       }
 
       // Get price (RWF only)
-      const price = this.getContentPricing(content);
+      const price = await this.ensureContentPricing(content);
 
       if (price <= 0) {
         return next(new AppError('Invalid content pricing', 400));

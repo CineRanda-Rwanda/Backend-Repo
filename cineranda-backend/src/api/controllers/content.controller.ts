@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { S3Service } from '../../core/services/s3.service';
 import { Content } from '../../data/models/movie.model';
 import AppError from '../../utils/AppError';
+import { resolvePriceFromFields } from '../../utils/pricing';
 import { MovieRepository } from '../../data/repositories/movie.repository';
 import { GenreRepository } from '../../data/repositories/genre.repository';
 import { CategoryRepository } from '../../data/repositories/category.repository';
@@ -21,6 +22,45 @@ export class ContentController {
     this.genreRepository = new GenreRepository();
     this.categoryRepository = new CategoryRepository();
     this.watchHistoryRepository = new WatchHistoryRepository();
+  }
+
+  private extractPriceInput(input: any): number | null {
+    return resolvePriceFromFields({
+      price: input?.price,
+      priceInRwf: input?.priceInRwf,
+      priceInCoins: input?.priceInCoins
+    });
+  }
+
+  private parseBooleanInput(value: any): boolean {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === 'true') return true;
+      if (normalized === 'false') return false;
+    }
+
+    return Boolean(value);
+  }
+
+  private normalizeEpisodePayload(episode: any, label: string): any {
+    const normalized = { ...episode };
+    normalized.isFree = this.parseBooleanInput(normalized.isFree);
+    const resolvedPrice = this.extractPriceInput(normalized);
+
+    if (!normalized.isFree && (resolvedPrice === null || resolvedPrice <= 0)) {
+      throw new AppError(`${label} must include a valid price when isFree is false`, 400);
+    }
+
+    normalized.price = resolvedPrice ?? 0;
+
+    delete normalized.priceInRwf;
+    delete normalized.priceInCoins;
+
+    return normalized;
   }
 
   /**
@@ -151,9 +191,15 @@ export class ContentController {
         trailerYoutubeLink: req.body.trailerYoutubeLink,
       };
       
-      // Add pricing if provided (RWF only)
-      if (req.body.price) {
-        content.price = parseInt(req.body.price, 10);
+      const resolvedMoviePrice = this.extractPriceInput(req.body);
+      if (contentType === 'Movie') {
+        if (resolvedMoviePrice === null) {
+          return next(new AppError('Price is required for movies. Provide price, priceInRwf, or priceInCoins.', 400));
+        }
+        content.price = resolvedMoviePrice;
+      } else if (resolvedMoviePrice !== null) {
+        // Allow optional base price for series if provided
+        content.price = resolvedMoviePrice;
       }
       
       // Handle new fields: genres, categories, cast, releaseYear
@@ -266,7 +312,23 @@ export class ContentController {
               
               if (Array.isArray(seasons)) {
                 console.log('Seasons is a valid array with length:', seasons.length);
-                content.seasons = seasons;
+                content.seasons = seasons.map((season: any, seasonIndex: number) => {
+                  if (!season || !Array.isArray(season.episodes)) {
+                    return season;
+                  }
+
+                  return {
+                    ...season,
+                    episodes: season.episodes.map((episode: any, episodeIndex: number) =>
+                      this.normalizeEpisodePayload(
+                        episode,
+                        `Season ${season.seasonNumber || seasonIndex + 1} Episode ${
+                          episode?.episodeNumber || episodeIndex + 1
+                        }`
+                      )
+                    )
+                  };
+                });
               } else {
                 console.log('Seasons is not an array, defaulting to empty array');
                 content.seasons = [];
@@ -317,6 +379,11 @@ export class ContentController {
 
       const files = req.files as { [fieldname: string]: Express.Multer.File[] };
       const updates = { ...req.body };
+
+      const resolvedUpdatePrice = this.extractPriceInput(req.body);
+      if (resolvedUpdatePrice !== null) {
+        (updates as any).price = resolvedUpdatePrice;
+      }
 
       // Handle poster image replacement
       if (files.posterImage?.[0]) {
@@ -1803,18 +1870,27 @@ export class ContentController {
         description: req.body.description || '',
         videoUrl,
         duration: parseInt(req.body.duration) || 0,
-        isFree: req.body.isFree === 'true',
+        isFree: this.parseBooleanInput(req.body.isFree),
       };
 
       // Add optional fields
       if (thumbnailUrl) newEpisode.thumbnailUrl = thumbnailUrl;
       if (Object.keys(subtitles).length > 0) newEpisode.subtitles = subtitles;
-      if (req.body.price) newEpisode.price = parseInt(req.body.price);
       if (req.body.trailerYoutubeLink) newEpisode.trailerYoutubeLink = req.body.trailerYoutubeLink;  // ✅ ADD THIS LINE
       if (req.body.isPublished !== undefined) newEpisode.isPublished = req.body.isPublished === 'true';  // ✅ ADD THIS LINE
 
+      const normalizedEpisode = this.normalizeEpisodePayload(
+        {
+          ...newEpisode,
+          price: req.body.price,
+          priceInRwf: req.body.priceInRwf,
+          priceInCoins: req.body.priceInCoins
+        },
+        `Episode ${req.body.episodeNumber}`
+      );
+
       // Add episode to season
-      season.episodes.push(newEpisode);
+      season.episodes.push(normalizedEpisode);
 
       // Save series
       await series.save();
@@ -1897,8 +1973,22 @@ export class ContentController {
       if (req.body.title !== undefined) episode.title = req.body.title;
       if (req.body.description !== undefined) episode.description = req.body.description;
       if (req.body.duration !== undefined) episode.duration = parseInt(req.body.duration);
-      if (req.body.isFree !== undefined) episode.isFree = req.body.isFree === 'true';
-      if (req.body.price !== undefined) episode.price = parseInt(req.body.price);
+      if (req.body.isFree !== undefined) episode.isFree = this.parseBooleanInput(req.body.isFree);
+      const updatedPrice = this.extractPriceInput(req.body);
+      if (updatedPrice !== null) {
+        if (!episode.isFree && updatedPrice <= 0) {
+          return next(new AppError('Paid episodes must include a price greater than 0', 400));
+        }
+        episode.price = updatedPrice;
+      } else if (
+        req.body.isFree !== undefined &&
+        episode.isFree === false &&
+        (!episode.price || episode.price <= 0)
+      ) {
+        return next(
+          new AppError('Provide price, priceInRwf, or priceInCoins when marking an episode as paid', 400)
+        );
+      }
       if (req.body.trailerYoutubeLink !== undefined) {
         episode.trailerYoutubeLink = req.body.trailerYoutubeLink;
         console.log('✅ Setting trailerYoutubeLink to:', req.body.trailerYoutubeLink);

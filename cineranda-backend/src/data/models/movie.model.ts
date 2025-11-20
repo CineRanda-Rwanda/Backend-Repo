@@ -1,4 +1,114 @@
 import mongoose, { Schema, Document, model } from 'mongoose';
+import { COINS_TO_RWF_RATE, rwfToCoins } from '../../utils/pricing';
+
+const asPositiveNumber = (value: unknown): number | null => {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+
+  return parsed;
+};
+
+const convertRwfToCoins = (amount: number | null): number => {
+  if (amount === null) {
+    return 0;
+  }
+
+  const coins = rwfToCoins(amount);
+  return coins ?? 0;
+};
+
+const applyLegacyPricingSnapshot = (target: any) => {
+  if (!target) {
+    return;
+  }
+
+  const priceAmount = asPositiveNumber(target.price) ?? asPositiveNumber(target.priceInRwf);
+  if (priceAmount !== null) {
+    target.price = priceAmount;
+    target.priceInRwf = priceAmount;
+    target.priceInCoins = convertRwfToCoins(priceAmount);
+  } else if (target.priceInCoins !== undefined) {
+    const coinsValue = asPositiveNumber(target.priceInCoins);
+    target.priceInCoins = coinsValue ?? 0;
+    target.priceInRwf = coinsValue ? coinsValue * COINS_TO_RWF_RATE : 0;
+  } else {
+    target.priceInRwf = target.priceInRwf ?? 0;
+    target.priceInCoins = target.priceInCoins ?? 0;
+  }
+};
+
+const SERIES_ONLY_FIELDS = [
+  'seasons',
+  'totalSeriesPrice',
+  'totalSeriesPriceInRwf',
+  'totalSeriesPriceInCoins',
+  'discountedSeriesPrice',
+  'discountedSeriesPriceInRwf',
+  'discountedSeriesPriceInCoins',
+  'seriesDiscountPercent',
+  'finalSeriesPrice',
+  'totalEpisodes'
+];
+
+const transformContentPricing = (_doc: any, ret: any) => {
+  applyLegacyPricingSnapshot(ret);
+
+  if (ret.contentType !== 'Series') {
+    SERIES_ONLY_FIELDS.forEach((field) => {
+      if (field === 'seasons') {
+        delete ret.seasons;
+      } else {
+        delete ret[field];
+      }
+    });
+    return ret;
+  }
+
+  const totalSeries =
+    asPositiveNumber(ret.totalSeriesPrice) ?? asPositiveNumber(ret.totalSeriesPriceInRwf);
+  if (totalSeries !== null) {
+    ret.totalSeriesPrice = totalSeries;
+    ret.totalSeriesPriceInRwf = totalSeries;
+    ret.totalSeriesPriceInCoins = convertRwfToCoins(totalSeries);
+  } else {
+    ret.totalSeriesPriceInRwf = ret.totalSeriesPriceInRwf ?? 0;
+    ret.totalSeriesPriceInCoins = ret.totalSeriesPriceInCoins ?? 0;
+  }
+
+  const discountedSeries =
+    asPositiveNumber(ret.discountedSeriesPrice) ?? asPositiveNumber(ret.discountedSeriesPriceInRwf);
+  if (discountedSeries !== null) {
+    ret.discountedSeriesPrice = discountedSeries;
+    ret.discountedSeriesPriceInRwf = discountedSeries;
+    ret.discountedSeriesPriceInCoins = convertRwfToCoins(discountedSeries);
+  } else {
+    ret.discountedSeriesPriceInRwf = ret.discountedSeriesPriceInRwf ?? 0;
+    ret.discountedSeriesPriceInCoins = ret.discountedSeriesPriceInCoins ?? 0;
+  }
+
+  if (Array.isArray(ret.seasons)) {
+    ret.seasons = ret.seasons.map((season: any) => {
+      if (!season || !Array.isArray(season.episodes)) {
+        return season;
+      }
+
+      season.episodes = season.episodes.map((episode: any) => {
+        applyLegacyPricingSnapshot(episode);
+        return episode;
+      });
+
+      return season;
+    });
+  }
+
+  return ret;
+};
 
 // --- INTERFACES ---
 export interface IEpisode {
@@ -10,6 +120,8 @@ export interface IEpisode {
   thumbnailUrl?: string;
   trailerYoutubeLink?: string;
   price: number; // Unified price in RWF
+  priceInRwf?: number;
+  priceInCoins?: number;
   duration: number; // in minutes
   isFree: boolean;
   isPublished?: boolean;
@@ -56,6 +168,8 @@ export interface IContent extends Document {
   movieFileUrl?: string;
   duration?: number;
   price: number; // Unified price in RWF
+  priceInRwf?: number;
+  priceInCoins?: number;
   subtitles?: {
     en?: string;
     fr?: string;
@@ -67,8 +181,12 @@ export interface IContent extends Document {
   
   // Series pricing (auto-calculated)
   totalSeriesPrice?: number;
+  totalSeriesPriceInRwf?: number;
+  totalSeriesPriceInCoins?: number;
   seriesDiscountPercent?: number;
   discountedSeriesPrice?: number;
+  discountedSeriesPriceInRwf?: number;
+  discountedSeriesPriceInCoins?: number;
   
   // Control whether ratings are allowed for this content
   ratingsEnabled?: boolean;
@@ -312,6 +430,16 @@ const ContentSchema = new Schema<IContent>(
     toObject: { virtuals: true }
   }
 );
+
+ContentSchema.set('toJSON', {
+  virtuals: true,
+  transform: transformContentPricing
+});
+
+ContentSchema.set('toObject', {
+  virtuals: true,
+  transform: transformContentPricing
+});
 
 // --- PRE-SAVE HOOK: Auto-calculate series pricing ---
 ContentSchema.pre('save', function(next) {
