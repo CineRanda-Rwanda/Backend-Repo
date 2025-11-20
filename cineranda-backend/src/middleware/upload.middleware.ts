@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import multer from 'multer';
 import multerS3 from 'multer-s3';
-import { S3Client } from '@aws-sdk/client-s3';
+import AWS from 'aws-sdk';
 import type { Request } from 'express';
 import config from '../config';
 import AppError from '../utils/AppError';
@@ -12,13 +12,18 @@ if (!accessKeyId || !secretAccessKey || !region || !s3Bucket) {
   throw new Error('AWS configuration is incomplete. Cannot initialize upload middleware.');
 }
 
-const s3 = new S3Client({
+// Configure AWS SDK v2
+AWS.config.update({
+  accessKeyId,
+  secretAccessKey,
   region,
-  credentials: {
-    accessKeyId,
-    secretAccessKey,
-  },
+  httpOptions: {
+    timeout: 300000, // 5 minutes timeout to prevent hangs
+    connectTimeout: 5000
+  }
 });
+
+const s3 = new AWS.S3();
 
 const folderMap: Record<string, string> = {
   posterImage: 'posters',
@@ -30,12 +35,12 @@ const folderMap: Record<string, string> = {
   subtitleKin: 'subtitles',
 };
 
-type MetadataCallback = (error: Error | null, metadata?: Record<string, any>) => void;
+type MetadataCallback = (error: Error | null, metadata?: any) => void;
 type KeyCallback = (error: Error | null, key?: string) => void;
 
 // Configure multer to stream uploads directly to S3
 const storage = multerS3({
-  s3,
+  s3: s3 as any, // Cast to any to avoid type mismatch between multer-s3 v2 and aws-sdk v2 types if strict
   bucket: s3Bucket,
   acl: 'private',
   contentType: multerS3.AUTO_CONTENT_TYPE,
@@ -81,4 +86,4 @@ export const uploadContentFiles = upload.fields([
   { name: 'subtitleEn', maxCount: 1 },
   { name: 'subtitleFr', maxCount: 1 },
   { name: 'subtitleKin', maxCount: 1 },
-]); 
+]);

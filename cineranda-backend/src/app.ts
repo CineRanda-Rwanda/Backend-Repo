@@ -13,7 +13,9 @@ const app = express();
 app.use(helmet());
 app.use(cors());
 app.use(express.json()); // This line is critical
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+
+// Request logging
 app.use(requestLogger);
 
 // Apply location detection to all routes
