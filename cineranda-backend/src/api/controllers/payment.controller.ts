@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { Request, Response, NextFunction } from 'express';
 import { PaymentService } from '../../core/services/payment.service';
 import { PaymentRepository } from '../../data/repositories/payment.repository';
+import { NotificationService } from '../../core/services/notification.service';
 import { AuthRequest } from '../../middleware/auth.middleware';
 import { Content, IContent } from '../../data/models/movie.model';
 import { User } from '../../data/models/user.model';
@@ -12,10 +13,12 @@ import { resolvePriceFromFields } from '../../utils/pricing';
 export class PaymentController {
   private paymentService: PaymentService;
   private paymentRepository: PaymentRepository;
+  private notificationService: NotificationService;
 
   constructor() {
     this.paymentService = new PaymentService();
     this.paymentRepository = new PaymentRepository();
+    this.notificationService = new NotificationService();
   }
 
   /**
@@ -395,6 +398,18 @@ export class PaymentController {
         }
       );
 
+      // Send notification
+      await this.notificationService.sendSystemNotification(
+        String(user._id),
+        'Purchase Successful',
+        `You have successfully purchased "${content.title}". Enjoy watching!`,
+        {
+          actionType: 'content',
+          actionUrl: `/watch/${content._id}`,
+          imageUrl: content.posterImageUrl
+        }
+      );
+
       res.status(200).json({
         status: 'success',
         message: 'Content purchased successfully',
@@ -551,6 +566,18 @@ export class PaymentController {
           episodeNumber: episode.episodeNumber,
           episodeTitle: episode.title,
           isEpisodePurchase: true  // ADDED flag to distinguish
+        }
+      );
+
+      // Send notification
+      await this.notificationService.sendSystemNotification(
+        String(user._id),
+        'Episode Purchased',
+        `You have successfully purchased ${series.title} - S${seasonNumber}E${episode.episodeNumber}.`,
+        {
+          actionType: 'content',
+          actionUrl: `/watch/${contentId}?season=${seasonNumber}&episode=${episodeId}`,
+          imageUrl: series.posterImageUrl
         }
       );
 
@@ -714,6 +741,18 @@ export class PaymentController {
         }
       );
 
+      // Send notification
+      await this.notificationService.sendSystemNotification(
+        String(user._id),
+        'Season Purchased',
+        `You have successfully purchased Season ${seasonNumber} of ${series.title}.`,
+        {
+          actionType: 'content',
+          actionUrl: `/watch/${contentId}?season=${seasonNumber}`,
+          imageUrl: series.posterImageUrl
+        }
+      );
+
       res.status(200).json({
         status: 'success',
         message: 'Season purchased successfully',
@@ -776,6 +815,17 @@ export class PaymentController {
                 purchase.userId.toString(),
                 purchase.amountPaid
               );
+
+              // Send notification
+              await this.notificationService.sendSystemNotification(
+                purchase.userId.toString(),
+                'Wallet Top-up Successful',
+                `Your wallet has been credited with ${purchase.amountPaid} RWF.`,
+                {
+                  actionType: 'wallet',
+                  priority: 'high'
+                }
+              );
             } else if (purchase.purchaseType === 'content' && purchase.contentId) {
               // FIX: Add content to user's purchasedContent
               await User.findByIdAndUpdate(
@@ -798,6 +848,21 @@ export class PaymentController {
                   }
                 }
               );
+
+              // Send notification
+              const content = await Content.findById(purchase.contentId).select('title posterImageUrl');
+              if (content) {
+                 await this.notificationService.sendSystemNotification(
+                  purchase.userId.toString(),
+                  'Purchase Successful',
+                  `You have successfully purchased "${content.title}".`,
+                  {
+                    actionType: 'content',
+                    actionUrl: `/watch/${content._id}`,
+                    imageUrl: content.posterImageUrl
+                  }
+                );
+              }
             }
             
             // Redirect to success page
@@ -850,6 +915,17 @@ export class PaymentController {
               purchase.userId.toString(),
               purchase.amountPaid
             );
+
+            // Send notification
+            await this.notificationService.sendSystemNotification(
+              purchase.userId.toString(),
+              'Wallet Top-up Successful',
+              `Your wallet has been credited with ${purchase.amountPaid} RWF.`,
+              {
+                actionType: 'wallet',
+                priority: 'high'
+              }
+            );
           } else if (purchase.purchaseType === 'content' && purchase.contentId) {
             // FIX: Add content to user's purchasedContent
             await User.findByIdAndUpdate(
@@ -872,6 +948,21 @@ export class PaymentController {
                 }
               }
             );
+
+            // Send notification
+            const content = await Content.findById(purchase.contentId).select('title posterImageUrl');
+            if (content) {
+               await this.notificationService.sendSystemNotification(
+                purchase.userId.toString(),
+                'Purchase Successful',
+                `You have successfully purchased "${content.title}".`,
+                {
+                  actionType: 'content',
+                  actionUrl: `/watch/${content._id}`,
+                  imageUrl: content.posterImageUrl
+                }
+              );
+            }
           }
         }
       }

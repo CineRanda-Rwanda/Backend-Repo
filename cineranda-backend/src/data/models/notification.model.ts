@@ -2,6 +2,7 @@ import mongoose, { Schema, Document } from 'mongoose';
 
 export interface INotification extends Document {
   type: 'broadcast' | 'targeted';
+  senderType: 'admin' | 'system';
   title: string;
   message: string;
   actionType?: 'content' | 'wallet' | 'profile' | 'other';
@@ -9,7 +10,7 @@ export interface INotification extends Document {
   imageUrl?: string;
   priority: 'low' | 'medium' | 'high';
   recipients?: mongoose.Types.ObjectId[]; // For targeted notifications
-  sentBy: mongoose.Types.ObjectId; // Admin who sent it
+  sentBy?: mongoose.Types.ObjectId; // Admin who sent it (optional for system notifications)
   recipientCount: number;
   deliveredCount: number;
   readCount: number;
@@ -41,6 +42,11 @@ const NotificationSchema = new Schema<INotification>(
       type: String,
       enum: ['broadcast', 'targeted'],
       required: true,
+    },
+    senderType: {
+      type: String,
+      enum: ['admin', 'system'],
+      default: 'admin',
     },
     title: {
       type: String,
@@ -76,7 +82,7 @@ const NotificationSchema = new Schema<INotification>(
     sentBy: {
       type: Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      required: false,
     },
     recipientCount: {
       type: Number,

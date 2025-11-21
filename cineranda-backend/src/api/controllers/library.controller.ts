@@ -1,11 +1,13 @@
 import { Response, NextFunction } from 'express';
 import { LibraryRepository } from '../../data/repositories/library.repository';
+import { NotificationService } from '../../core/services/notification.service';
 import { Content } from '../../data/models/movie.model';
 import { AuthRequest } from '../../middleware/auth.middleware';
 import AppError from '../../utils/AppError';
 import mongoose from 'mongoose';
 
 const libraryRepository = new LibraryRepository();
+const notificationService = new NotificationService();
 
 export class LibraryController {
   /**
@@ -49,6 +51,18 @@ export class LibraryController {
 
       // Add to library
       const libraryItem = await libraryRepository.addToLibrary(userId, contentId, contentType);
+
+      // Send notification
+      await notificationService.sendSystemNotification(
+        userId,
+        'Added to Library',
+        `"${content.title}" has been added to your library.`,
+        {
+          actionType: 'content',
+          actionUrl: `/watch/${content._id}`,
+          imageUrl: content.posterImageUrl
+        }
+      );
 
       res.status(200).json({
         status: 'success',

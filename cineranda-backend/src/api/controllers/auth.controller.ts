@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { AuthService } from '../../core/services/auth.service';
 import { VerificationService } from '../../core/services/verification.service';
+import { NotificationService } from '../../core/services/notification.service';
 import AppError from '../../utils/AppError';
 import { User, IUser } from '../../data/models/user.model';
 import { Settings } from '../../data/models/settings.model';
@@ -32,10 +33,12 @@ const signToken = (id: string) => {
 export class AuthController {
   private authService: AuthService;
   private verificationService: VerificationService;
+  private notificationService: NotificationService;
   
   constructor() {
     this.authService = new AuthService();
     this.verificationService = new VerificationService();
+    this.notificationService = new NotificationService();
   }
   
   register = async (req: Request, res: Response, next: NextFunction) => {
@@ -164,6 +167,17 @@ export class AuthController {
       // Get welcome bonus info for response
       const settings = await Settings.findOne();
       const welcomeBonusAmount = settings?.welcomeBonusAmount || 0;
+
+      // Send welcome notification
+      await this.notificationService.sendSystemNotification(
+        (user._id as any).toString(),
+        'Welcome to CineRanda!',
+        `Welcome ${user.username}! We're excited to have you on board.${welcomeBonusAmount > 0 ? ` You've received ${welcomeBonusAmount} RWF as a welcome bonus.` : ''}`,
+        {
+          actionType: 'profile',
+          priority: 'high'
+        }
+      );
       
       res.status(200).json({
         status: 'success',
