@@ -15,7 +15,7 @@ const FavoriteSchema: Schema = new Schema(
     },
     movieId: {
       type: Schema.Types.ObjectId,
-      ref: 'Movie',
+      ref: 'Content',
       required: true
     }
   },

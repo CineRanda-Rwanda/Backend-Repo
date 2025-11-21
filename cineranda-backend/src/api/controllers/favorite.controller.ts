@@ -1,14 +1,14 @@
 import { Request, Response, NextFunction } from 'express';
 import { Favorite } from '../../data/models/favorite.model';
-import { MovieRepository } from '../../data/repositories/movie.repository';
+import { Content } from '../../data/models/movie.model';
 import { AuthRequest } from '../../middleware/auth.middleware';
 import AppError from '../../utils/AppError';
 
 export class FavoriteController {
-  private movieRepository: MovieRepository;
+  // Removed movieRepository dependency
 
   constructor() {
-    this.movieRepository = new MovieRepository();
+    // No initialization needed
   }
 
   // Add movie to favorites
@@ -25,7 +25,7 @@ export class FavoriteController {
       }
       
       // Verify movie exists
-      const movie = await this.movieRepository.findById(movieId);
+      const movie = await Content.findById(movieId);
       if (!movie) {
         return next(new AppError('Movie not found', 404));
       }
@@ -99,7 +99,7 @@ export class FavoriteController {
         .limit(limit)
         .populate({
           path: 'movieId',
-          select: 'title thumbnailUrl genres categories averageRating'
+          select: 'title posterImageUrl genres categories averageRating'
         });
       
       const pages = Math.ceil(total / limit);
