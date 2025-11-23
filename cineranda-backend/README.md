@@ -41,7 +41,7 @@ Cineranda is a full-featured OTT/VOD backend built with TypeScript, Express, and
 - **Storage**: AWS S3 (uploads via `@aws-sdk/client-s3` & `multer-s3`)
 - **Auth**: JWT, bcrypt, speakeasy (2FA)
 - **Payments**: Stripe, PayPal SDK, Flutterwave, MTN MoMo, Airtel Money
-- **Testing**: Jest, ts-jest, Supertest
+- **Testing**: Jest, ts-jest, Supertest, postman
 - **Tooling**: Nodemon, ts-node, TypeScript paths, Winston logging
 
 ## Architecture Overview
