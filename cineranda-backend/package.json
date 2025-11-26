@@ -26,7 +26,7 @@
     "@types/speakeasy": "^2.0.10",
     "aws-sdk": "^2.1692.0",
     "axios": "^1.12.2",
-    "bcrypt": "^6.0.0",
+    "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^17.2.2",
     "express": "^5.1.0",
@@ -47,7 +47,7 @@
     "winston": "^3.17.0"
   },
   "devDependencies": {
-    "@types/bcrypt": "^6.0.0",
+    "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/jest": "^30.0.0",
