@@ -70,7 +70,7 @@ export class WhatsAppService {
         console.error('WhatsApp message sending failed:', response.data);
         throw new Error('Failed to send WhatsApp verification message');
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error sending WhatsApp message:', error);
       
       // Check if it's an Axios error with response
