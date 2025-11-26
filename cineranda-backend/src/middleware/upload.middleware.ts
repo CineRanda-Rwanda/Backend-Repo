@@ -9,7 +9,14 @@ import AppError from '../utils/AppError';
 const { accessKeyId, secretAccessKey, region, s3Bucket } = config.aws;
 
 if (!accessKeyId || !secretAccessKey || !region || !s3Bucket) {
-  throw new Error('AWS configuration is incomplete. Cannot initialize upload middleware.');
+  const missing = [];
+  if (!accessKeyId) missing.push('AWS_ACCESS_KEY_ID');
+  if (!secretAccessKey) missing.push('AWS_SECRET_ACCESS_KEY');
+  if (!region) missing.push('AWS_REGION');
+  if (!s3Bucket) missing.push('AWS_S3_BUCKET');
+  
+  console.error('❌ CRITICAL ERROR: Missing AWS Environment Variables:', missing.join(', '));
+  throw new Error(`AWS configuration is incomplete. Missing variables: ${missing.join(', ')}`);
 }
 
 // Configure AWS SDK v2

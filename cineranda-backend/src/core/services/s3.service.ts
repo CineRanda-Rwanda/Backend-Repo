@@ -15,7 +15,14 @@ export class S3Service {
 
     // This safety check prevents the app from running with incomplete AWS config
     if (!region || !accessKeyId || !secretAccessKey || !s3Bucket) {
-      throw new Error('AWS configuration is incomplete. Please check your .env file.');
+      const missing = [];
+      if (!accessKeyId) missing.push('AWS_ACCESS_KEY_ID');
+      if (!secretAccessKey) missing.push('AWS_SECRET_ACCESS_KEY');
+      if (!region) missing.push('AWS_REGION');
+      if (!s3Bucket) missing.push('AWS_S3_BUCKET');
+      
+      console.error('❌ CRITICAL ERROR: Missing AWS Environment Variables in S3Service:', missing.join(', '));
+      throw new Error(`AWS configuration is incomplete. Missing variables: ${missing.join(', ')}`);
     }
 
     this.s3Client = new S3Client({
