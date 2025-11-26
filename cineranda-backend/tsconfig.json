@@ -4,7 +4,7 @@
     "module": "commonjs",
     "lib": ["es2018"],
     "outDir": "./dist",
-    "rootDir": "./src",
+    "rootDir": "./",
     "strict": true,
     "esModuleInterop": true, // This fixes the ts-jest warning
     "skipLibCheck": true,
@@ -20,6 +20,6 @@
     },
     "typeRoots": ["./node_modules/@types", "./src/types", "./"]
   },
-  "include": ["src/**/*", "*.d.ts"],
+  "include": ["src/**/*", "api/**/*", "*.d.ts"],
   "exclude": ["node_modules", "dist"]
 }
