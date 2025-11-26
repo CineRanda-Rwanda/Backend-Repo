@@ -33,18 +33,18 @@ const config = {
   
   // --- THIS IS THE CORRECTED JWT OBJECT ---
   jwt: {
-    secret: process.env.JWT_SECRET!,
-    expiration: process.env.JWT_EXPIRATION!,
-    refreshSecret: process.env.JWT_REFRESH_SECRET!,
-    refreshExpiration: process.env.JWT_REFRESH_EXPIRATION!,
+    secret: process.env.JWT_SECRET || 'default-secret-do-not-use-in-prod',
+    expiration: process.env.JWT_EXPIRATION || '90d',
+    refreshSecret: process.env.JWT_REFRESH_SECRET || 'default-refresh-secret',
+    refreshExpiration: process.env.JWT_REFRESH_EXPIRATION || '7d',
   } as JwtConfig,
   
   // This is the AWS configuration object (already correct)
   aws: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
-    region: process.env.AWS_REGION!,
-    s3Bucket: process.env.AWS_S3_BUCKET!,
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
+    region: process.env.AWS_REGION || '',
+    s3Bucket: process.env.AWS_S3_BUCKET || '',
   } as AwsConfig,
   
   // --- ALL YOUR OTHER CONFIGURATIONS ARE PRESERVED ---
