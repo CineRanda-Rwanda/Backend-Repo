@@ -2,6 +2,11 @@ import mongoose from 'mongoose';
 import config from '../config';
 
 const connect = async (): Promise<typeof mongoose> => {
+  // Check if we have an active connection
+  if (mongoose.connection.readyState === 1) {
+    return mongoose;
+  }
+
   try {
     // Connect to MongoDB with additional options
     const connection = await mongoose.connect(config.mongodb.uri, {

@@ -2,8 +2,10 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { ConnectOptions } from 'mongoose';
 
-// Load environment variables
-dotenv.config({ path: path.join(__dirname, '../../.env') });
+// Load environment variables only in development or if .env exists
+if (process.env.NODE_ENV !== 'production') {
+  dotenv.config({ path: path.join(__dirname, '../../.env') });
+}
 
 // --- Define interfaces for type safety ---
 interface JwtConfig {
