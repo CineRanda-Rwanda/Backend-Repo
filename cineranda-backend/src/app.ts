@@ -37,8 +37,8 @@ app.use(cors({
   credentials: true
 }));
 app.use(helmet());
-app.use(express.json()); // This line is critical
-app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+app.use(express.json({ limit: '10gb' })); // Increased limit for JSON bodies
+app.use(express.urlencoded({ extended: true, limit: '10gb' })); // Increased limit for URL-encoded bodies
 
 // Request logging
 app.use(requestLogger);

@@ -34,9 +34,9 @@ const config = {
   // --- THIS IS THE CORRECTED JWT OBJECT ---
   jwt: {
     secret: process.env.JWT_SECRET || 'default-secret-do-not-use-in-prod',
-    expiration: process.env.JWT_EXPIRATION || '90d',
+    expiration: process.env.JWT_EXPIRATION || '365d', // 1 year
     refreshSecret: process.env.JWT_REFRESH_SECRET || 'default-refresh-secret',
-    refreshExpiration: process.env.JWT_REFRESH_EXPIRATION || '7d',
+    refreshExpiration: process.env.JWT_REFRESH_EXPIRATION || '365d', // 1 year
   } as JwtConfig,
   
   // This is the AWS configuration object (already correct)

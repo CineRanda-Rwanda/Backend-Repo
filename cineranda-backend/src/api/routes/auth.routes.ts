@@ -34,6 +34,9 @@ router.post('/reset-pin', authController.resetPin);
 router.use(authenticate);
 
 router.get('/profile', authController.getProfile);
+// Alias for admin profile to fix frontend 404
+router.get('/admin/profile', authController.getProfile);
+
 router.patch('/profile', authController.updateProfile);
 router.post('/change-pin', authController.changePin);
 

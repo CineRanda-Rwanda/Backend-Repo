@@ -5,9 +5,11 @@ import { NotificationService } from '../../core/services/notification.service';
 import AppError from '../../utils/AppError';
 import { User, IUser } from '../../data/models/user.model';
 import { Settings } from '../../data/models/settings.model';
+import config from '../../config';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { SignOptions, Secret } from 'jsonwebtoken'; // Add Secret type
+import type { StringValue } from 'ms';
 import mongoose, { Document } from 'mongoose';
 
 // Define an interface for requests that have been authenticated
@@ -20,14 +22,14 @@ type AuthenticatedUser = Document & IUser & { _id: mongoose.Types.ObjectId };
 
 // Helper function for creating tokens - FIXED VERSION
 const signToken = (id: string) => {
-  const secret = process.env.JWT_SECRET || 'your-fallback-secret';
-  // Create a properly typed options object
-  const options = {
-    expiresIn: process.env.JWT_EXPIRES_IN || '90d'
+  const secret = config.jwt.secret || process.env.JWT_SECRET || 'your-fallback-secret';
+  const expiresIn = (process.env.JWT_EXPIRES_IN || config.jwt.expiration || '365d') as StringValue;
+  
+  const options: SignOptions = {
+    expiresIn
   };
   
-  // Cast both the secret and options to the right types
-  return jwt.sign({ id }, secret as Secret, options as jwt.SignOptions);
+  return jwt.sign({ id }, secret as Secret, options);
 };
 
 export class AuthController {
@@ -43,11 +45,16 @@ export class AuthController {
   
   register = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { phoneNumber, preferredChannel } = req.body;
+      const { phoneNumber, preferredChannel, username } = req.body;
       
       if (!phoneNumber) {
         return next(new AppError('Phone number is required', 400));
       }
+      
+      if (!username || typeof username !== 'string' || !username.trim()) {
+        return next(new AppError('Username is required', 400));
+      }
+      const trimmedUsername = username.trim();
       
       // Validate phone number format (E.164: +[country][number])
       const phoneRegex = /^\+[1-9]\d{7,14}$/;
@@ -66,6 +73,14 @@ export class AuthController {
       
       if (existingUser && existingUser.phoneVerified) {
         return next(new AppError('User with this phone number already exists', 400));
+      }
+
+      const usernameOwner = await User.findOne({ username: trimmedUsername });
+      if (
+        usernameOwner &&
+        (!existingUser || usernameOwner._id?.toString() !== existingUser._id?.toString())
+      ) {
+        return next(new AppError('Username is already taken', 400));
       }
 
       // Generate verification code with the enhanced service
@@ -100,6 +115,7 @@ export class AuthController {
         message: `verification code sent via ${channelMessage}`,
         data: {
           phoneNumber,
+          username: trimmedUsername,
           verificationRequired: true
         }
       });
