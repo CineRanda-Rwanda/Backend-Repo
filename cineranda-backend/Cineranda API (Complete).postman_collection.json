@@ -720,6 +720,28 @@
 							]
 						}
 					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"  var payload = {};",
+									"  try {",
+									"    payload = pm.response.json();",
+									"  } catch (err) {}",
+									"  if (payload && payload.token) {",
+									"    pm.environment.set('auth_token', payload.token);",
+									"  }",
+									"  if (payload && payload.refreshToken) {",
+									"    pm.environment.set('refresh_token', payload.refreshToken);",
+									"  }",
+									"}"
+								]
+							}
+						}
+					],
 					"response": [
 						{
 							"name": "Login User",
@@ -857,6 +879,199 @@
 							],
 							"cookie": [],
 							"body": "{\n    \"status\": \"success\",\n    \"token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2OTFkNjY4ZmNjOGU5OGE4MGY4MzEzZDQiLCJyb2xlIjoidXNlciIsInVzZXJuYW1lIjoibmV3dXNlcjEiLCJpYXQiOjE3NjM1MzUzNDMsImV4cCI6MTc2MzUzNjI0M30.9kbK8ktQM1WEGUFYzSlnnTn9kDXh0ipr35dtYui3LtQ\",\n    \"refreshToken\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2OTFkNjY4ZmNjOGU5OGE4MGY4MzEzZDQiLCJpYXQiOjE3NjM1MzUzNDMsImV4cCI6MTc2NDE0MDE0M30.MKViqeDkJtlZ1MWrdOHmKkvhRs4OFGYULime2_3dgSg\",\n    \"data\": {\n        \"user\": {\n            \"_id\": \"691d668fcc8e98a80f8313d4\",\n            \"phoneNumber\": \"+250780000000\",\n            \"role\": \"user\",\n            \"location\": \"international\",\n            \"isActive\": true,\n            \"isEmailVerified\": false,\n            \"loginCount\": 0,\n            \"isTwoFactorEnabled\": false,\n            \"pendingVerification\": false,\n            \"phoneVerified\": true,\n            \"balance\": 0,\n            \"watchHistory\": [],\n            \"purchasedContent\": [],\n            \"purchasedEpisodes\": [],\n            \"purchasedSeasons\": [],\n            \"wallet\": {\n                \"balance\": 0,\n                \"bonusBalance\": 500,\n                \"transactions\": [\n                    {\n                        \"amount\": 500,\n                        \"type\": \"welcome-bonus\",\n                        \"description\": \"Welcome to Cineranda!\",\n                        \"createdAt\": \"2025-11-19T06:52:09.226Z\",\n                        \"_id\": \"691d6919cc8e98a80f8313db\"\n                    }\n                ],\n                \"_id\": \"691d668fcc8e98a80f8313d5\"\n            },\n            \"transactions\": [],\n            \"createdAt\": \"2025-11-19T06:41:20.177Z\",\n            \"updatedAt\": \"2025-11-19T06:52:09.241Z\",\n            \"__v\": 1,\n            \"username\": \"newuser1\"\n        }\n    }\n}"
+						}
+					]
+				},
+				{
+					"name": "Refresh User Token",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"refreshToken\": \"{{refresh_token}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/auth/refresh-token",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"auth",
+								"refresh-token"
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"  var payload = {};",
+									"  try {",
+									"    payload = pm.response.json();",
+									"  } catch (err) {}",
+									"  var data = payload && payload.data ? payload.data : payload;",
+									"  if (data && data.token) {",
+									"    pm.environment.set('auth_token', data.token);",
+									"  }",
+									"  if (data && data.refreshToken) {",
+									"    pm.environment.set('refresh_token', data.refreshToken);",
+									"  }",
+									"}"
+								]
+							}
+						}
+					],
+					"response": [
+						{
+							"name": "Refresh User Token",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"refreshToken\": \"{{refresh_token}}\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "http://localhost:5000/api/v1/auth/refresh-token",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "5000",
+									"path": [
+										"api",
+										"v1",
+										"auth",
+										"refresh-token"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "JSON",
+							"header": [
+								{
+									"key": "Content-Security-Policy",
+									"value": "default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests",
+									"type": "text"
+								},
+								{
+									"key": "Cross-Origin-Opener-Policy",
+									"value": "same-origin",
+									"type": "text"
+								},
+								{
+									"key": "Cross-Origin-Resource-Policy",
+									"value": "same-origin",
+									"type": "text"
+								},
+								{
+									"key": "Origin-Agent-Cluster",
+									"value": "?1",
+									"type": "text"
+								},
+								{
+									"key": "Referrer-Policy",
+									"value": "no-referrer",
+									"type": "text"
+								},
+								{
+									"key": "Strict-Transport-Security",
+									"value": "max-age=31536000; includeSubDomains",
+									"type": "text"
+								},
+								{
+									"key": "X-Content-Type-Options",
+									"value": "nosniff",
+									"type": "text"
+								},
+								{
+									"key": "X-DNS-Prefetch-Control",
+									"value": "off",
+									"type": "text"
+								},
+								{
+									"key": "X-Download-Options",
+									"value": "noopen",
+									"type": "text"
+								},
+								{
+									"key": "X-Frame-Options",
+									"value": "SAMEORIGIN",
+									"type": "text"
+								},
+								{
+									"key": "X-Permitted-Cross-Domain-Policies",
+									"value": "none",
+									"type": "text"
+								},
+								{
+									"key": "X-XSS-Protection",
+									"value": "0",
+									"type": "text"
+								},
+								{
+									"key": "Access-Control-Allow-Origin",
+									"value": "*",
+									"type": "text"
+								},
+								{
+									"key": "Content-Type",
+									"value": "application/json; charset=utf-8",
+									"type": "text"
+								},
+								{
+									"key": "Content-Length",
+									"value": "210",
+									"type": "text"
+								},
+								{
+									"key": "ETag",
+									"value": "W/\"d2-XoH0CQfgJ4jdD7No8sytXN9JZPE\"",
+									"type": "text"
+								},
+								{
+									"key": "Date",
+									"value": "Wed, 19 Nov 2025 09:00:00 GMT",
+									"type": "text"
+								},
+								{
+									"key": "Connection",
+									"value": "keep-alive",
+									"type": "text"
+								},
+								{
+									"key": "Keep-Alive",
+									"value": "timeout=5",
+									"type": "text"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"status\": \"success\",\n    \"data\": {\n        \"token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2OTFkNjY4ZmNjOGU5OGE4MGY4MzEzZDQiLCJpYXQiOjE3NjM1NDQ5MDAsImV4cCI6MTc2MzU0NTgwMH0.ErZPWw9bYgYbE6r_1M5kA4Ah6u5n7G5EyQ6xT1eCk3s\",\n        \"refreshToken\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2OTFkNjY4ZmNjOGU5OGE4MGY4MzEzZDQiLCJpYXQiOjE3NjM1NDQ5MDAsImV4cCI6MTc2NDE1MzcwMH0.1uF5zTdG3M0r3v9Jkq6X5n1F7bF6c7H8Jg9Q0r1s2t3\",\n        \"expiresIn\": 86400,\n        \"tokenType\": \"Bearer\"\n    }\n}"
 						}
 					]
 				},
@@ -17519,6 +17734,10 @@
 		},
 		{
 			"key": "auth_token",
+			"value": ""
+		},
+		{
+			"key": "refresh_token",
 			"value": ""
 		},
 		{
