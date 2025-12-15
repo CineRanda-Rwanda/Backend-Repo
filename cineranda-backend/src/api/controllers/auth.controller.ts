@@ -177,9 +177,9 @@ export class AuthController {
       
       await user.save();
       
-      // Generate token and send response
-      const token = signToken((user._id as any).toString());
-      
+      // Automatically log the user in after successful verification
+      const authResult = await this.authService.login(phoneNumber, pin);
+
       // Get welcome bonus info for response
       const settings = await Settings.findOne();
       const welcomeBonusAmount = settings?.welcomeBonusAmount || 0;
@@ -197,20 +197,10 @@ export class AuthController {
       
       res.status(200).json({
         status: 'success',
-        token,
+        token: authResult.token,
+        refreshToken: authResult.refreshToken,
         data: {
-          user: {
-            _id: user._id,
-            username: user.username,
-            phoneNumber: user.phoneNumber,
-            role: user.role,
-            phoneVerified: true,
-            wallet: {
-              balance: user.wallet?.balance || 0,
-              bonusBalance: user.wallet?.bonusBalance || 0,
-              totalBalance: (user.wallet?.balance || 0) + (user.wallet?.bonusBalance || 0)
-            }
-          },
+          user: authResult.user,
           welcomeBonus: welcomeBonusAmount
         }
       });
