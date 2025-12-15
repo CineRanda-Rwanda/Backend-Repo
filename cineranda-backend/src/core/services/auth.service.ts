@@ -366,7 +366,7 @@ export class AuthService {
     }
     
     // Update PIN - hash it properly
-    const bcrypt = require('bcrypt');
+    const bcrypt = require('bcryptjs');
     user.pin = await bcrypt.hash(newPin, 12);  // Use salt rounds 12 to match registration
     await user.save();
     
@@ -455,7 +455,7 @@ export class AuthService {
       console.log(`Updating PIN for user: ${user._id}`);
       
       // Update PIN - handle hashing in pre-save hook
-      const bcrypt = require('bcrypt');
+      const bcrypt = require('bcryptjs');
       user.pin = await bcrypt.hash(newPin, 12);  // Match registration's 12 salt rounds
       user.passwordResetToken = undefined;
       user.passwordResetExpires = undefined;
@@ -531,7 +531,7 @@ export class AuthService {
     }
 
     // If the user is found, update the PIN and clear the reset fields
-    const bcrypt = require('bcrypt');
+    const bcrypt = require('bcryptjs');
     user.pin = await bcrypt.hash(newPin, 12);  // Match registration's 12 salt rounds
     user.pinResetCode = undefined;
     user.pinResetExpires = undefined;
