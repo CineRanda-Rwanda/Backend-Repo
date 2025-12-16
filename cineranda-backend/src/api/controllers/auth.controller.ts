@@ -63,9 +63,14 @@ export class AuthController {
       }
       
       // Validate channel preference if provided
-      let channel: 'sms' | 'whatsapp' | 'both' = 'both';
+      const whatsappEnabled = this.verificationService.isWhatsAppEnabled();
+      let channel: 'sms' | 'whatsapp' | 'both' = 'sms';
       if (preferredChannel && ['sms', 'whatsapp', 'both'].includes(preferredChannel)) {
         channel = preferredChannel as 'sms' | 'whatsapp' | 'both';
+      }
+
+      if (!whatsappEnabled && channel !== 'sms') {
+        channel = 'sms';
       }
 
       // Check if user exists and is already verified
@@ -105,14 +110,17 @@ export class AuthController {
       }
       
       // Determine which channels were used
-      const channelMessage = channel === 'both' 
-        ? 'SMS and WhatsApp' 
+      const channelMessage = channel === 'both'
+        ? 'SMS and WhatsApp'
         : (channel === 'sms' ? 'SMS' : 'WhatsApp');
+      const finalChannelMessage = (!whatsappEnabled && preferredChannel && preferredChannel !== 'sms')
+        ? 'SMS (WhatsApp disabled)'
+        : channelMessage;
       
       // Respond with success but no token yet
       res.status(200).json({
         status: 'success',
-        message: `verification code sent via ${channelMessage}`,
+        message: `verification code sent via ${finalChannelMessage}`,
         data: {
           phoneNumber,
           username: trimmedUsername,
