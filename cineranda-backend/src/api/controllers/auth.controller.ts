@@ -80,14 +80,6 @@ export class AuthController {
         return next(new AppError('User with this phone number already exists', 400));
       }
 
-      const usernameOwner = await User.findOne({ username: trimmedUsername });
-      if (
-        usernameOwner &&
-        (!existingUser || usernameOwner._id?.toString() !== existingUser._id?.toString())
-      ) {
-        return next(new AppError('Username is already taken', 400));
-      }
-
       // Generate verification code with the enhanced service
       const verificationCode = await this.verificationService.sendVerificationCode(phoneNumber, channel);
       
@@ -132,6 +124,81 @@ export class AuthController {
     }
   };
 
+  registerWithEmail = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { username, email, password } = req.body;
+
+      if (!username || typeof username !== 'string' || !username.trim()) {
+        return next(new AppError('Username is required', 400));
+      }
+
+      if (!email || typeof email !== 'string') {
+        return next(new AppError('Email is required', 400));
+      }
+
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return next(new AppError('Invalid email address', 400));
+      }
+
+      if (!password || typeof password !== 'string' || password.length < 6) {
+        return next(new AppError('Password must be at least 6 characters long', 400));
+      }
+
+      const result = await this.authService.registerEmailUser({
+        username: username.trim(),
+        email: email.toLowerCase(),
+        password
+      });
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Verification code sent to your email. Enter the code to complete registration.',
+        data: {
+          email: email.toLowerCase(),
+          verificationRequired: true,
+          verificationExpires: result.verificationExpires
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  verifyEmail = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { token, email, verificationCode, username, password } = req.body;
+
+      if (!token && (!email || !verificationCode)) {
+        return next(new AppError('Verification token or email/code pair is required', 400));
+      }
+
+      if (!token && (typeof verificationCode !== 'string' || verificationCode.trim().length === 0)) {
+        return next(new AppError('Verification code is required', 400));
+      }
+
+      const authResult = await this.authService.verifyEmail({
+        token,
+        email: typeof email === 'string' ? email.toLowerCase() : undefined,
+        verificationCode,
+        username,
+        password,
+      });
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Email verified successfully',
+        token: authResult.token,
+        refreshToken: authResult.refreshToken,
+        data: {
+          user: authResult.user
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
   // Add this new method for completing registration after verification
   verifyAndCompleteRegistration = async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -156,6 +223,7 @@ export class AuthController {
       // Complete registration with username and PIN
       user.username = username;
       user.pin = pin; // Let model handle hashing
+      user.authProvider = 'phone';
       user.phoneVerified = true;
       user.pendingVerification = false;
       user.verificationCode = undefined;
@@ -175,7 +243,7 @@ export class AuthController {
           user.wallet.transactions.push({
             amount: settings.welcomeBonusAmount,
             type: 'welcome-bonus',
-            description: 'Welcome to Cineranda!',
+            description: 'Welcome to Randa Plus!',
             createdAt: new Date()
           });
         }
@@ -195,7 +263,7 @@ export class AuthController {
       // Send welcome notification
       await this.notificationService.sendSystemNotification(
         (user._id as any).toString(),
-        'Welcome to CineRanda!',
+        'Welcome to Randa Plus!',
         `Welcome ${user.username}! We're excited to have you on board.${welcomeBonusAmount > 0 ? ` You've received ${welcomeBonusAmount} RWF as a welcome bonus.` : ''}`,
         {
           actionType: 'profile',
@@ -258,22 +326,77 @@ export class AuthController {
 
   login = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      // Support both 'identifier' and 'phoneNumber' fields for backward compatibility
-      const { identifier, phoneNumber, pin } = req.body;
-      const loginIdentifier = identifier || phoneNumber;
-      
-      if (!loginIdentifier || !pin) {
-        return next(new AppError('Phone number/username and PIN are required', 400));
+      const method = (req.body?.method || 'phone').toLowerCase();
+
+      if (method === 'email') {
+        return this.loginWithEmail(req, res, next);
       }
-      
+
+      if (method === 'google') {
+        return this.loginWithGoogle(req, res, next);
+      }
+
+      const { phoneNumber, pin, identifier } = req.body;
+      const loginIdentifier = phoneNumber || identifier;
+
+      if (!loginIdentifier || !pin) {
+        return next(new AppError('Phone number and PIN are required', 400));
+      }
+
       const result = await this.authService.login(loginIdentifier, pin);
-      
-      res.status(200).json({ 
+
+      res.status(200).json({
         status: 'success',
         token: result.token,
         refreshToken: result.refreshToken,
-        data: { 
-          user: result.user 
+        data: {
+          user: result.user
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  loginWithEmail = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { email, password } = req.body;
+
+      if (!email || !password) {
+        return next(new AppError('Email and password are required', 400));
+      }
+
+      const result = await this.authService.loginWithEmail(email, password);
+
+      res.status(200).json({
+        status: 'success',
+        token: result.token,
+        refreshToken: result.refreshToken,
+        data: {
+          user: result.user
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  loginWithGoogle = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const idToken = req.body?.idToken || req.body?.credential;
+
+      if (!idToken) {
+        return next(new AppError('Google token is required', 400));
+      }
+
+      const result = await this.authService.loginWithGoogle(idToken);
+
+      res.status(200).json({
+        status: 'success',
+        token: result.token,
+        refreshToken: result.refreshToken,
+        data: {
+          user: result.user
         }
       });
     } catch (error) {

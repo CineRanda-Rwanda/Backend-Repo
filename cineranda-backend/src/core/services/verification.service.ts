@@ -52,10 +52,7 @@ export class VerificationService {
     const targetNumber = alternatePhoneNumber || phoneNumber;
     
     // Normalize phone number format
-    let formattedNumber = targetNumber;
-    if (!formattedNumber.startsWith('+')) {
-      formattedNumber = `+${formattedNumber}`;
-    }
+    const formattedNumber = this.formatPhoneNumber(targetNumber);
     
     let smsSuccess = false;
     let whatsappSuccess = false;
@@ -110,60 +107,8 @@ export class VerificationService {
    * Send verification code via SMS using Africa's Talking
    */
   private async sendSmsCode(phoneNumber: string, code: string): Promise<void> {
-    // In development mode, just simulate sending
-    if (process.env.NODE_ENV !== 'production' && !this.forceSmsSend) {
-      console.log(`[DEV] 📱 Would send SMS to ${phoneNumber} with code: ${code}`);
-      return;
-    }
-    
-    // Ensure Africa's Talking is configured for SMS
-    if (!this.atApiKey || !this.atUsername) {
-      throw new AppError('Africa\'s Talking SMS not properly configured', 500);
-    }
-
-    try {
-      const params = new URLSearchParams();
-      params.append('username', this.atUsername);
-      params.append('to', phoneNumber);
-      params.append('message', `Your CinéRanda verification code is: ${code}`);
-      if (this.atSenderId) {
-        params.append('from', this.atSenderId);
-      }
-
-      const response = await axios.post(
-        this.smsApiUrl,
-        params.toString(),
-        {
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'apiKey': this.atApiKey
-          }
-        }
-      );
-
-      const recipients = response.data?.SMSMessageData?.Recipients;
-      const hasSuccess = Array.isArray(recipients) && recipients.some((recipient: any) => recipient?.status === 'Success');
-
-      if (!hasSuccess) {
-        const firstStatus = Array.isArray(recipients) && recipients.length > 0 ? recipients[0]?.status : 'Unknown error';
-        throw new AppError(`SMS failed: ${firstStatus}`, 500);
-      }
-
-      console.log(`SMS sent to ${phoneNumber} via Africa's Talking`);
-    } catch (error) {
-      console.error('Africa\'s Talking SMS error:', error);
-
-      if (axios.isAxiosError(error)) {
-        const axiosError = error as AxiosError;
-        const responseData = axiosError.response?.data as any;
-        const errorMessage = responseData?.SMSMessageData?.Message || responseData?.message || 'Unknown error';
-        throw new AppError(`SMS failed: ${errorMessage}`, axiosError.response?.status || 500);
-      }
-
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      throw new AppError(`SMS failed: ${errorMessage}`, 500);
-    }
+    const message = `Your Randa Plus verification code is: ${code}`;
+    await this.sendSmsMessage(phoneNumber, message);
   }
   
   /**
@@ -239,11 +184,7 @@ export class VerificationService {
     newPhoneNumber?: string
   ): Promise<void> {
     const targetNumber = newPhoneNumber || originalPhoneNumber;
-    
-    let formattedNumber = targetNumber;
-    if (!formattedNumber.startsWith('+')) {
-      formattedNumber = `+${formattedNumber}`;
-    }
+    const formattedNumber = this.formatPhoneNumber(targetNumber);
     
     if (channel === 'sms' || channel === 'both') {
       await this.sendSmsCode(formattedNumber, code);
@@ -268,5 +209,70 @@ export class VerificationService {
    */
   async verifyCode(storedCode: string, submittedCode: string): Promise<boolean> {
     return storedCode === submittedCode;
+  }
+
+  async sendPinResetCode(phoneNumber: string, code: string): Promise<void> {
+    const formattedNumber = this.formatPhoneNumber(phoneNumber);
+    const message = `Use code ${code} to reset your Randa Plus PIN. It expires in 15 minutes.`;
+    await this.sendSmsMessage(formattedNumber, message);
+  }
+
+  private formatPhoneNumber(phoneNumber: string): string {
+    return phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber}`;
+  }
+
+  private async sendSmsMessage(phoneNumber: string, message: string): Promise<void> {
+    if (process.env.NODE_ENV !== 'production' && !this.forceSmsSend) {
+      console.log(`[DEV] 📱 Would send SMS to ${phoneNumber}: ${message}`);
+      return;
+    }
+
+    if (!this.atApiKey || !this.atUsername) {
+      throw new AppError('Africa\'s Talking SMS not properly configured', 500);
+    }
+
+    try {
+      const params = new URLSearchParams();
+      params.append('username', this.atUsername);
+      params.append('to', phoneNumber);
+      params.append('message', message);
+      if (this.atSenderId) {
+        params.append('from', this.atSenderId);
+      }
+
+      const response = await axios.post(
+        this.smsApiUrl,
+        params.toString(),
+        {
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'apiKey': this.atApiKey
+          }
+        }
+      );
+
+      const recipients = response.data?.SMSMessageData?.Recipients;
+      const hasSuccess = Array.isArray(recipients) && recipients.some((recipient: any) => recipient?.status === 'Success');
+
+      if (!hasSuccess) {
+        const firstStatus = Array.isArray(recipients) && recipients.length > 0 ? recipients[0]?.status : 'Unknown error';
+        throw new AppError(`SMS failed: ${firstStatus}`, 500);
+      }
+
+      console.log(`SMS sent to ${phoneNumber} via Africa's Talking`);
+    } catch (error) {
+      console.error('Africa\'s Talking SMS error:', error);
+
+      if (axios.isAxiosError(error)) {
+        const axiosError = error as AxiosError;
+        const responseData = axiosError.response?.data as any;
+        const errorMessage = responseData?.SMSMessageData?.Message || responseData?.message || 'Unknown error';
+        throw new AppError(`SMS failed: ${errorMessage}`, axiosError.response?.status || 500);
+      }
+
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new AppError(`SMS failed: ${errorMessage}`, 500);
+    }
   }
 }

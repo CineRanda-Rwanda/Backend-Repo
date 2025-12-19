@@ -8,18 +8,24 @@ const authController = new AuthController();
 // --- PUBLIC ROUTES ---
 // Register endpoint (now just starts the process)
 router.post('/register', authController.register);
+router.post('/register/phone', authController.register);
+router.post('/register/email', authController.registerWithEmail);
+router.post('/register/google', authController.loginWithGoogle);
 
 // Alias for register - request verification code
 router.post('/request-verification', authController.register);
 
 // Complete registration with verification
 router.post('/verify-registration', authController.verifyAndCompleteRegistration);
+router.post('/verify-email', authController.verifyEmail);
 
 // Resend verification code if needed
 router.post('/resend-code', authController.resendVerificationCode);
 
 // Other existing auth routes
 router.post('/login', authController.login);
+router.post('/login/email', authController.loginWithEmail);
+router.post('/login/google', authController.loginWithGoogle);
 router.post('/admin/login', authController.adminLogin);
 router.post('/admin/refresh-token', authController.refreshToken);
 router.post('/refresh-token', authController.refreshToken);

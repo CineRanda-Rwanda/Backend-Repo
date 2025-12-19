@@ -8,6 +8,11 @@ import crypto from 'crypto';
 import { User } from '../../data/models/user.model';
 import speakeasy from 'speakeasy';
 import qrcode from 'qrcode';
+import { OAuth2Client } from 'google-auth-library';
+import bcrypt from 'bcryptjs';
+import { EmailService } from './email.service';
+import { EmailRegistration } from '../../data/models/emailRegistration.model';
+import { VerificationService } from './verification.service';
 
 // --- FIX 1: DEFINE THE UserWithId TYPE ---
 // This type represents a Mongoose document based on IUser with a correctly typed _id.
@@ -15,9 +20,40 @@ type UserWithId = IUser & { _id: Types.ObjectId };
 
 export class AuthService {
   private userRepository: UserRepository;
+  private googleClient?: OAuth2Client;
+  private googleAudience?: string;
+  private emailService: EmailService;
+  private verificationService: VerificationService;
 
   constructor() {
     this.userRepository = new UserRepository();
+    this.emailService = new EmailService();
+    this.verificationService = new VerificationService();
+    const googleClientId = process.env.GOOGLE_CLIENT_ID;
+    if (googleClientId) {
+      this.googleAudience = googleClientId;
+      this.googleClient = new OAuth2Client(googleClientId);
+    }
+  }
+
+  private buildAuthResponse(user: UserWithId): { user: Partial<IUser>; token: string; refreshToken: string } {
+    const token = this.generateToken(user);
+    const refreshToken = this.generateRefreshToken(user);
+    const userResponse = { ...user.toObject() } as Partial<IUser>;
+    delete (userResponse as any).pin;
+    delete (userResponse as any).password;
+    return {
+      user: userResponse,
+      token,
+      refreshToken
+    };
+  }
+
+  private getGoogleClient(): OAuth2Client {
+    if (!this.googleClient || !this.googleAudience) {
+      throw new AppError('Google authentication is not configured', 500);
+    }
+    return this.googleClient;
   }
 
   // New register method with username, phoneNumber, pin
@@ -25,61 +61,79 @@ export class AuthService {
     username: string;
     phoneNumber: string;
     pin: string;
-    firstName?: string;
-    lastName?: string;
-    email?: string;
   }): Promise<{ user: Partial<IUser>; token: string; refreshToken: string }> {
-    // Check if user already exists
-    const existingUsername = await this.userRepository.findByUsername(userData.username);
-    if (existingUsername) {
-      throw new AppError('Username already taken', 400);
+    if (!userData.phoneNumber || !userData.pin) {
+      throw new AppError('Phone number and PIN are required', 400);
     }
 
-    // Check if phone number already exists
     const existingPhone = await this.userRepository.findOne({ phoneNumber: userData.phoneNumber });
     if (existingPhone) {
       throw new AppError('Phone number already in use', 400);
     }
 
-    // Check if email already exists (only if email provided)
-    if (userData.email) {
-      const existingEmail = await this.userRepository.findByEmail(userData.email);
-      if (existingEmail) {
-        throw new AppError('Email already in use', 400);
-      }
-    }
-
-    // Create a valid user object without null values
-    const userToCreate: any = {
+    const userToCreate: Partial<IUser> = {
       username: userData.username,
       phoneNumber: userData.phoneNumber,
       pin: userData.pin,
       isActive: true,
       role: 'user',
+      authProvider: 'phone',
     };
 
-    // Only add optional fields if they're provided
-    if (userData.firstName) userToCreate.firstName =  userData.firstName;
-    if (userData.lastName) userToCreate.lastName = userData.lastName;
-    if (userData.email) userToCreate.email = userData.email;
-
-    // Create new user (with cleaned data)
     const user = await this.userRepository.create(userToCreate) as UserWithId;
+    return this.buildAuthResponse(user);
+  }
 
-    // Generate tokens
-    const token = this.generateToken(user);
-    const refreshToken = this.generateRefreshToken(user);
+  async registerEmailUser(userData: {
+    username: string;
+    email: string;
+    password: string;
+  }): Promise<{ verificationExpires: Date }> {
+    const email = userData.email?.toLowerCase();
+    const username = userData.username?.trim();
 
-    // Return user data (without sensitive fields) and tokens
-    const userResponse = { ...user.toObject() };
-    delete (userResponse as any).pin;
-    delete (userResponse as any).password;
+    if (!email) {
+      throw new AppError('Email is required', 400);
+    }
 
-    return {
-      user: userResponse,
-      token,
-      refreshToken
-    };
+    if (!username) {
+      throw new AppError('Username is required', 400);
+    }
+
+    if (!userData.password || userData.password.length < 6) {
+      throw new AppError('Password must be at least 6 characters long', 400);
+    }
+
+    const existingEmail = await this.userRepository.findByEmail(email);
+    if (existingEmail) {
+      throw new AppError('Email already in use', 400);
+    }
+
+    const passwordHash = await bcrypt.hash(userData.password, 12);
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const verificationCodeHash = crypto.createHash('sha256').update(verificationCode).digest('hex');
+    const verificationExpires = new Date(Date.now() + 10 * 60 * 1000);
+
+    await EmailRegistration.findOneAndUpdate(
+      { email },
+      {
+        requestedUsername: username,
+        passwordHash,
+        verificationCodeHash,
+        verificationExpires,
+        role: 'user',
+        attempts: 0,
+      },
+      {
+        upsert: true,
+        new: true,
+        setDefaultsOnInsert: true,
+      }
+    );
+
+    await this.emailService.sendEmailVerificationCode(email, verificationCode, username);
+
+    return { verificationExpires };
   }
 
   // New login method with identifier (username or phone) and pin
@@ -122,20 +176,18 @@ export class AuthService {
       }
 
       // Always try direct comparison as backup
-      if (!isPinValid) {
+      if (!isPinValid && user.pin) {
         try {
           console.log(`PIN format in DB: ${user.pin.substring(0, 3)}...`);
-          // Use bcryptjs instead of bcrypt to match registration
-          const bcryptjs = require('bcryptjs');
-          isPinValid = await bcryptjs.compare(pin, user.pin);
-          console.log(`Direct bcryptjs comparison result: ${isPinValid}`);
+          isPinValid = await bcrypt.compare(pin, user.pin);
+          console.log(`Direct bcrypt comparison result: ${isPinValid}`);
         } catch (err) {
           console.error(`Error in direct bcrypt compare:`, err);
         }
       }
 
       // Last resort - try plaintext comparison
-      if (!isPinValid && pin === user.pin) {
+      if (!isPinValid && user.pin && pin === user.pin) {
         console.log(`Direct string comparison matched - PIN stored as plaintext!`);
         isPinValid = true;
       }
@@ -148,24 +200,34 @@ export class AuthService {
       const userId = user._id.toString();
       await this.userRepository.updateLastActive(userId);
 
-      // Generate tokens
-      const token = this.generateToken(user);
-      const refreshToken = this.generateRefreshToken(user);
-
-      // Return user data (without sensitive fields) and tokens
-      const userResponse = { ...user.toObject() };
-      delete userResponse.pin;
-      delete userResponse.password;
-
-      return {
-        user: userResponse,
-        token,
-        refreshToken
-      };
+      return this.buildAuthResponse(user);
     } catch (error) {
       console.error('Login error:', error);
       throw error;
     }
+  }
+
+  async loginWithEmail(email: string, password: string): Promise<{ user: Partial<IUser>; token: string; refreshToken: string }> {
+    if (!email || !password) {
+      throw new AppError('Email and password are required', 400);
+    }
+
+    const user = await this.userRepository.findWithPassword(email.toLowerCase()) as UserWithId | null;
+    if (!user || !user.password) {
+      throw new AppError('Invalid credentials', 401);
+    }
+
+    const isValid = await user.comparePassword(password);
+    if (!isValid) {
+      throw new AppError('Invalid credentials', 401);
+    }
+
+    if (!user.isEmailVerified) {
+      throw new AppError('Please verify your email before logging in', 403);
+    }
+
+    await this.userRepository.updateLastActive(user._id.toString());
+    return this.buildAuthResponse(user);
   }
 
   async refreshToken(refreshToken: string): Promise<{ token: string; refreshToken: string }> {
@@ -200,20 +262,150 @@ export class AuthService {
     }
   }
 
-  async verifyEmail(token: string): Promise<boolean> {
-    // Cast to UserWithId
-    const user = await this.userRepository.findOne({ emailVerificationToken: token }) as UserWithId;
-    
-    if (!user) {
-      throw new AppError('Invalid verification token', 400);
+  async loginWithGoogle(idToken: string): Promise<{ user: Partial<IUser>; token: string; refreshToken: string }> {
+    if (!idToken) {
+      throw new AppError('Google token is required', 400);
     }
-    
-    // Update user to mark email as verified
+
+    const client = this.getGoogleClient();
+    const ticket = await client.verifyIdToken({
+      idToken,
+      audience: this.googleAudience,
+    });
+
+    const payload = ticket.getPayload();
+    if (!payload || !payload.sub || !payload.email) {
+      throw new AppError('Unable to verify Google account', 401);
+    }
+
+    const googleId = payload.sub;
+    const email = payload.email.toLowerCase();
+    const displayName = payload.name || payload.given_name || email.split('@')[0];
+
+    let user = await User.findOne({
+      $or: [{ googleId }, { email }]
+    }) as UserWithId | null;
+
+    if (user) {
+      if (!user.googleId) {
+        user.googleId = googleId;
+      }
+      if (!user.isEmailVerified) {
+        user.isEmailVerified = true;
+      }
+      if (!user.authProvider || user.authProvider === 'phone') {
+        user.authProvider = 'google';
+      }
+      await user.save();
+    } else {
+      user = await this.userRepository.create({
+        username: displayName,
+        email,
+        googleId,
+        authProvider: 'google',
+        isEmailVerified: true,
+        isActive: true,
+        role: 'user',
+        pendingVerification: false,
+      }) as UserWithId;
+    }
+
+    await this.userRepository.updateLastActive(user._id.toString());
+    return this.buildAuthResponse(user);
+  }
+
+  async verifyEmail(params: {
+    email?: string;
+    verificationCode?: string;
+    username?: string;
+    password?: string;
+    token?: string;
+  }): Promise<{ user: Partial<IUser>; token: string; refreshToken: string }> {
+    const { email, verificationCode, username, password, token } = params;
+    const now = new Date();
+
+    if (email && verificationCode) {
+      const normalizedEmail = email.toLowerCase();
+      const pendingRegistration = await EmailRegistration.findOne({ email: normalizedEmail })
+        .select('+passwordHash');
+
+      if (!pendingRegistration || pendingRegistration.role !== 'user') {
+        throw new AppError('No pending verification found for this email', 400);
+      }
+
+      if (pendingRegistration.verificationExpires <= now) {
+        await EmailRegistration.deleteOne({ _id: pendingRegistration._id });
+        throw new AppError('Verification code has expired. Please request a new code.', 400);
+      }
+
+      if (!/^\d{6}$/.test(verificationCode)) {
+        throw new AppError('Invalid verification code format', 400);
+      }
+
+      const hashedCode = crypto.createHash('sha256').update(verificationCode).digest('hex');
+      if (hashedCode !== pendingRegistration.verificationCodeHash) {
+        throw new AppError('Invalid verification code', 400);
+      }
+
+      const finalUsername = username?.trim() || pendingRegistration.requestedUsername;
+      if (!finalUsername) {
+        throw new AppError('Username is required to complete registration', 400);
+      }
+
+      let passwordHash: string | undefined;
+      if (password) {
+        if (password.length < 6) {
+          throw new AppError('Password must be at least 6 characters long', 400);
+        }
+        passwordHash = await bcrypt.hash(password, 12);
+      } else if (pendingRegistration.passwordHash) {
+        passwordHash = pendingRegistration.passwordHash;
+      }
+
+      if (!passwordHash) {
+        throw new AppError('Password is required to complete registration', 400);
+      }
+
+      const existingEmail = await this.userRepository.findByEmail(normalizedEmail);
+      if (existingEmail) {
+        await EmailRegistration.deleteOne({ _id: pendingRegistration._id });
+        throw new AppError('Email already in use', 400);
+      }
+
+      const user = await this.userRepository.create({
+        username: finalUsername,
+        email: normalizedEmail,
+        password: passwordHash,
+        authProvider: 'email',
+        isEmailVerified: true,
+        isActive: true,
+        role: pendingRegistration.role || 'user',
+        pendingVerification: false,
+      }) as UserWithId;
+
+      await EmailRegistration.deleteOne({ _id: pendingRegistration._id });
+      return this.buildAuthResponse(user);
+    }
+
+    if (!token) {
+      throw new AppError('Verification details are required', 400);
+    }
+
+    const user = await this.userRepository.findOne({
+      emailVerificationToken: token,
+      emailVerificationExpires: { $gt: now },
+    }) as UserWithId | null;
+
+    if (!user) {
+      throw new AppError('Invalid or expired verification token', 400);
+    }
+
     user.isEmailVerified = true;
     user.emailVerificationToken = undefined;
+    user.emailVerificationExpires = undefined;
     await user.save();
-    
-    return true;
+
+    return this.buildAuthResponse(user);
   }
 
   /**
@@ -242,6 +434,8 @@ export class AuthService {
     user.passwordResetExpires = new Date(Date.now() + 10 * 60 * 1000);
 
     await user.save();
+
+    await this.emailService.sendPasswordResetEmail(email, resetToken);
 
     // 4. Return the UN-hashed token (this is what the user receives)
     return resetToken;
@@ -295,16 +489,12 @@ export class AuthService {
   }
 
   async updateProfile(userId: string, userData: {
-    firstName?: string;
-    lastName?: string;
     preferredLanguage?: 'kinyarwanda' | 'english' | 'french';
     theme?: 'light' | 'dark';
   }): Promise<Partial<IUser>> {
     // Make sure we're only passing valid values
     const validData: Partial<IUser> = {};
-    
-    if (userData.firstName) validData.firstName = userData.firstName;
-    if (userData.lastName) validData.lastName = userData.lastName;
+
     if (userData.preferredLanguage) validData.preferredLanguage = userData.preferredLanguage;
     if (userData.theme) validData.theme = userData.theme;
     
@@ -366,7 +556,6 @@ export class AuthService {
     }
     
     // Update PIN - hash it properly
-    const bcrypt = require('bcryptjs');
     user.pin = await bcrypt.hash(newPin, 12);  // Use salt rounds 12 to match registration
     await user.save();
     
@@ -455,7 +644,6 @@ export class AuthService {
       console.log(`Updating PIN for user: ${user._id}`);
       
       // Update PIN - handle hashing in pre-save hook
-      const bcrypt = require('bcryptjs');
       user.pin = await bcrypt.hash(newPin, 12);  // Match registration's 12 salt rounds
       user.passwordResetToken = undefined;
       user.passwordResetExpires = undefined;
@@ -507,7 +695,18 @@ export class AuthService {
     );
 
     console.log(`Generated PIN reset code ${resetCode} for user ${user.username}`);
-    // In a real application, you would send this code via SMS here.
+    const userPhone = user.phoneNumber;
+    if (!userPhone) {
+      console.error('User missing phone number for PIN reset', user._id);
+      throw new AppError('Cannot send PIN reset code: phone number not available.', 500);
+    }
+
+    try {
+      await this.verificationService.sendPinResetCode(userPhone, resetCode);
+    } catch (error) {
+      console.error('Failed to send PIN reset SMS:', error);
+      throw new AppError('Failed to send PIN reset code. Please try again later.', 500);
+    }
 
     return resetCode;
   }
@@ -531,7 +730,6 @@ export class AuthService {
     }
 
     // If the user is found, update the PIN and clear the reset fields
-    const bcrypt = require('bcryptjs');
     user.pin = await bcrypt.hash(newPin, 12);  // Match registration's 12 salt rounds
     user.pinResetCode = undefined;
     user.pinResetExpires = undefined;
@@ -570,7 +768,7 @@ export class AuthService {
    */
   async setup2FA(): Promise<{ secret: string; qrCodeUrl: string }> {
     const secret = speakeasy.generateSecret({
-      name: 'Cineranda Admin', // This name will appear in the user's authenticator app
+      name: 'Randa Plus Admin', // This name will appear in the user's authenticator app
     });
 
     const qrCodeUrl = await qrcode.toDataURL(secret.otpauth_url!);

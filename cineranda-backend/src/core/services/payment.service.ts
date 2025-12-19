@@ -36,7 +36,7 @@ export class PaymentService {
     contentTitle: string,
     amountInRwf: number
   ): Promise<AugmentedResponse> {
-    const txRef = `CINE-${v4()}`;
+    const txRef = `RPLUS-${v4()}`;
     const userId = String(user._id);
     
     const payload = {
@@ -45,14 +45,14 @@ export class PaymentService {
       currency: 'RWF',
       redirect_url: `${config.payment.callbackUrl}`,
       customer: {
-        email: user.email || `${user.phoneNumber}@cineranda.com`,
+        email: user.email || `${user.phoneNumber}@randaplus.com`,
         phonenumber: user.phoneNumber,
-        name: user.firstName ? `${user.firstName} ${user.lastName || ''}` : user.username || user.phoneNumber
+        name: user.username || user.phoneNumber
       },
       customizations: {
-        title: 'Cineranda Content Purchase',
+        title: 'Randa Plus Content Purchase',
         description: `Purchase of ${contentTitle}`,
-        logo: 'https://cineranda.com/logo.png'
+        logo: 'https://randaplus.com/logo.png'
       },
       meta: {
         contentId,
@@ -103,14 +103,14 @@ export class PaymentService {
       currency: 'RWF',
       redirect_url: `${config.payment.callbackUrl}`,
       customer: {
-        email: user.email || `${user.phoneNumber}@cineranda.com`,
+        email: user.email || `${user.phoneNumber}@randaplus.com`,
         phonenumber: user.phoneNumber,
-        name: user.firstName ? `${user.firstName} ${user.lastName || ''}` : user.username || user.phoneNumber
+        name: user.username || user.phoneNumber
       },
       customizations: {
-        title: 'Cineranda Wallet Top-Up',
+        title: 'Randa Plus Wallet Top-Up',
         description: `Add ${amount} RWF to your wallet`,
-        logo: 'https://cineranda.com/logo.png'
+        logo: 'https://randaplus.com/logo.png'
       },
       meta: {
         userId,

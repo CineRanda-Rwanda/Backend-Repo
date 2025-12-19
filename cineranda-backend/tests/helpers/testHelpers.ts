@@ -80,6 +80,42 @@ export class TestHelpers {
   }
 
   /**
+   * Create email/password user with auth token
+   */
+  static async createEmailUser(overrides: any = {}): Promise<{
+    user: IUser & { _id: Types.ObjectId };
+    token: string;
+    plainPassword: string;
+  }> {
+    const plainPassword = overrides.password || 'Password123!';
+    const hashedPassword = await bcrypt.hash(plainPassword, 1);
+    const hashedPin = await bcrypt.hash('1234', 1);
+
+    const user = await User.create({
+      username: overrides.username || `email_user_${Date.now()}`,
+      email: overrides.email || `email${Date.now()}@test.com`,
+      phoneNumber: overrides.phoneNumber || `+25078${Math.floor(Math.random() * 10000000)}`,
+      password: hashedPassword,
+      pin: hashedPin,
+      role: overrides.role || 'user',
+      authProvider: 'email',
+      isEmailVerified: true,
+      isActive: true,
+      phoneVerified: true,
+      pendingVerification: false,
+      ...overrides,
+    });
+
+    const token = jwt.sign(
+      { userId: (user._id as any).toString(), role: user.role, username: user.username },
+      config.jwt.secret,
+      { expiresIn: '1h' }
+    );
+
+    return { user: user as any, token, plainPassword };
+  }
+
+  /**
    * Create test genre
    */
   static async createTestGenre(): Promise<IGenre & { _id: Types.ObjectId }> {

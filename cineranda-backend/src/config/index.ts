@@ -28,7 +28,7 @@ const config = {
   apiPrefix: process.env.API_PREFIX || '/api/v1',
   
   mongodb: {
-    uri: process.env.MONGODB_URI || 'mongodb://localhost:27017/cineranda-dev'
+    uri: process.env.MONGODB_URI || 'mongodb://localhost:27017/randaplus-dev'
   },
   
   // --- THIS IS THE CORRECTED JWT OBJECT ---
@@ -73,7 +73,7 @@ const config = {
   },
   
   admin: {
-    email: process.env.ADMIN_EMAIL || 'admin@cineranda.com',
+    email: process.env.ADMIN_EMAIL || 'admin@randaplus.com',
     password: process.env.ADMIN_PASSWORD || 'SecurePassword123!'
   },
   

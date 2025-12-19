@@ -19,7 +19,9 @@ app.use(cors({
       config.clientUrl,
       'http://localhost:3000',
       'https://frontend-repo-ecru.vercel.app',
-      'https://cineranda.vercel.app'
+      'https://cineranda.vercel.app',
+      'https://randaplus.vercel.app',
+      'https://randaplus.com'
     ];
     
     // Check if the origin is allowed

@@ -14,7 +14,8 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "seed:admin": "ts-node src/data/seeders/adminSeeder.ts"
+    "seed:admin": "ts-node src/data/seeders/adminSeeder.ts",
+    "db:drop-legacy-indexes": "ts-node src/scripts/drop-username-index.ts"
   },
   "keywords": [],
   "author": "",
@@ -33,6 +34,7 @@
     "express": "^5.1.0",
     "express-validator": "^7.2.1",
     "flutterwave-node-v3": "^1.3.0",
+    "google-auth-library": "^9.0.0",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "lodash": "^4.17.21",

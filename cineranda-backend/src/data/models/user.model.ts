@@ -14,15 +14,16 @@ export interface IUser extends Document {
   username: string;
   email?: string;
   password?: string;
-  phoneNumber: string;
-  pin: string;
-  firstName?: string;
-  lastName?: string;
+  phoneNumber?: string;
+  pin?: string;
   role: string;
+  authProvider?: 'phone' | 'email' | 'google';
+  googleId?: string;
   location?: string;
   isActive?: boolean;
   isEmailVerified?: boolean;
   emailVerificationToken?: string;
+  emailVerificationExpires?: Date;
   passwordResetToken?: string;
   passwordResetExpires?: Date;
   pinResetCode?: string;
@@ -96,41 +97,52 @@ const userSchema = new Schema<IUser>(
       required: function(this: IUser) {
         return !this.pendingVerification;
       },
-      unique: true,
-      sparse: true,
       trim: true,
+    },
+    authProvider: {
+      type: String,
+      enum: ['phone', 'email', 'google'],
+      default: 'phone',
+      index: true,
     },
     email: {
       type: String,
-      unique: true,
-      sparse: true,
       trim: true,
       lowercase: true,
+      default: null,
+      required: function(this: IUser) {
+        return this.authProvider !== 'phone';
+      },
     },
     password: {
       type: String,
       select: false,
+      required: function(this: IUser) {
+        return this.authProvider === 'email';
+      },
     },
     phoneNumber: {
       type: String,
-      required: true,
-      unique: true,
+      required: function(this: IUser) {
+        return this.authProvider === 'phone';
+      },
       trim: true,
+      default: null,
     },
     pin: {
       type: String,
       required: function(this: IUser) {
+        if (this.authProvider !== 'phone') {
+          return false;
+        }
         return !this.pendingVerification;
       },
       select: false,
     },
-    firstName: {
+    googleId: {
       type: String,
-      trim: true,
-    },
-    lastName: {
-      type: String,
-      trim: true,
+      unique: true,
+      sparse: true,
     },
     role: {
       type: String,
@@ -149,6 +161,14 @@ const userSchema = new Schema<IUser>(
     isEmailVerified: {
       type: Boolean,
       default: false,
+    },
+    emailVerificationToken: {
+      type: String,
+      select: false,
+    },
+    emailVerificationExpires: {
+      type: Date,
+      select: false,
     },
     lastActive: {
       type: Date,
@@ -298,15 +318,26 @@ userSchema.index({ 'purchasedContent.contentId': 1 });
 userSchema.index({ 'purchasedEpisodes.episodeId': 1 });
 userSchema.index({ 'purchasedEpisodes.contentId': 1 });
 userSchema.index({ 'purchasedSeasons.seasonId': 1 });
+userSchema.index(
+  { email: 1 },
+  { unique: true, partialFilterExpression: { email: { $type: 'string' } } }
+);
+userSchema.index(
+  { phoneNumber: 1 },
+  { unique: true, partialFilterExpression: { phoneNumber: { $type: 'string' } } }
+);
 
 // Password hashing middleware
 userSchema.pre<IUser>('save', async function (next) {
   if (this.isModified('password') && this.password) {
-    try {
-      const salt = await bcrypt.genSalt(10);
-      this.password = await bcrypt.hash(this.password, salt);
-    } catch (error: any) {
-      return next(error);
+    const isAlreadyHashed = this.password.startsWith('$2');
+    if (!isAlreadyHashed) {
+      try {
+        const salt = await bcrypt.genSalt(10);
+        this.password = await bcrypt.hash(this.password, salt);
+      } catch (error: any) {
+        return next(error);
+      }
     }
   }
 
@@ -334,6 +365,7 @@ userSchema.methods.comparePassword = async function (
 userSchema.methods.comparePin = async function (
   candidatePin: string
 ): Promise<boolean> {
+  if (!this.pin) return false;
   return await bcrypt.compare(candidatePin, this.pin);
 };
 
