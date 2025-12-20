@@ -15,6 +15,15 @@ interface AugmentedResponse extends FlutterwaveResponse {
   generatedTxRef: string;
 }
 
+interface PaymentInitOptions {
+  user: IUser;
+  amount: number;
+  txRefPrefix: string;
+  title: string;
+  description: string;
+  meta: Record<string, any>;
+}
+
 export class PaymentService {
   private flw: any;
   private baseUrl: string;
@@ -27,6 +36,55 @@ export class PaymentService {
     this.baseUrl = 'https://api.flutterwave.com/v3';
   }
 
+  private async initiateFlutterwavePayment(options: PaymentInitOptions): Promise<AugmentedResponse> {
+    const { user, amount, txRefPrefix, title, description, meta } = options;
+    const txRef = `${txRefPrefix}-${v4()}`;
+    const userId = String(user._id);
+
+    const payload = {
+      tx_ref: txRef,
+      amount,
+      currency: 'RWF',
+      redirect_url: `${config.payment.callbackUrl}`,
+      customer: {
+        email: user.email || `${user.phoneNumber}@randaplus.com`,
+        phonenumber: user.phoneNumber,
+        name: user.username || user.phoneNumber
+      },
+      customizations: {
+        title,
+        description,
+        logo: 'https://randaplus.com/logo.png'
+      },
+      meta: {
+        userId,
+        ...meta
+      }
+    };
+
+    try {
+      const response = await axios.post(
+        `${this.baseUrl}/payments`,
+        payload,
+        {
+          headers: {
+            Authorization: `Bearer ${config.payment.flutterwave.secretKey}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      return {
+        ...response.data,
+        generatedTxRef: txRef
+      };
+    } catch (error) {
+      const axiosError = error as AxiosError;
+      console.error('Payment initialization error:', axiosError.response?.data || axiosError.message);
+      throw error;
+    }
+  }
+
   /**
    * Initialize a payment for content purchase using direct API call
    */
@@ -36,55 +94,19 @@ export class PaymentService {
     contentTitle: string,
     amountInRwf: number
   ): Promise<AugmentedResponse> {
-    const txRef = `RPLUS-${v4()}`;
-    const userId = String(user._id);
-    
-    const payload = {
-      tx_ref: txRef,
+    return this.initiateFlutterwavePayment({
+      user,
       amount: amountInRwf,
-      currency: 'RWF',
-      redirect_url: `${config.payment.callbackUrl}`,
-      customer: {
-        email: user.email || `${user.phoneNumber}@randaplus.com`,
-        phonenumber: user.phoneNumber,
-        name: user.username || user.phoneNumber
-      },
-      customizations: {
-        title: 'Randa Plus Content Purchase',
-        description: `Purchase of ${contentTitle}`,
-        logo: 'https://randaplus.com/logo.png'
-      },
+      txRefPrefix: 'RPLUS',
+      title: 'Randa Plus Content Purchase',
+      description: `Purchase of ${contentTitle}`,
       meta: {
+        type: 'content',
+        unlockType: 'content',
         contentId,
-        userId,
-        type: 'content'
+        contentTitle
       }
-    };
-
-    try {
-      // Use direct API call instead of SDK
-      const response = await axios.post(
-        `${this.baseUrl}/payments`, 
-        payload,
-        {
-          headers: {
-            'Authorization': `Bearer ${config.payment.flutterwave.secretKey}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-      
-      // Return both the response data and our generated txRef
-      return {
-        ...response.data,
-        generatedTxRef: txRef  // Include our reference
-      };
-    } catch (error) {
-      const axiosError = error as AxiosError;
-      console.error('Payment initialization error:', 
-        axiosError.response?.data || axiosError.message);
-      throw error;
-    }
+    });
   }
 
   /**
@@ -94,54 +116,75 @@ export class PaymentService {
     user: IUser,
     amount: number
   ): Promise<AugmentedResponse> {
-    const txRef = `WALLET-${v4()}`;
-    const userId = String(user._id);
-    
-    const payload = {
-      tx_ref: txRef,
-      amount: amount,
-      currency: 'RWF',
-      redirect_url: `${config.payment.callbackUrl}`,
-      customer: {
-        email: user.email || `${user.phoneNumber}@randaplus.com`,
-        phonenumber: user.phoneNumber,
-        name: user.username || user.phoneNumber
-      },
-      customizations: {
-        title: 'Randa Plus Wallet Top-Up',
-        description: `Add ${amount} RWF to your wallet`,
-        logo: 'https://randaplus.com/logo.png'
-      },
+    return this.initiateFlutterwavePayment({
+      user,
+      amount,
+      txRefPrefix: 'WALLET',
+      title: 'Randa Plus Wallet Top-Up',
+      description: `Add ${amount} RWF to your wallet`,
       meta: {
-        userId,
         type: 'wallet',
         amount
       }
-    };
+    });
+  }
 
-    try {
-      const response = await axios.post(
-        `${this.baseUrl}/payments`, 
-        payload,
-        {
-          headers: {
-            'Authorization': `Bearer ${config.payment.flutterwave.secretKey}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-      
-      // Return both the response data and our generated txRef
-      return {
-        ...response.data,
-        generatedTxRef: txRef  // Include our reference
-      };
-    } catch (error) {
-      const axiosError = error as AxiosError;
-      console.error('Payment initialization error:', 
-        axiosError.response?.data || axiosError.message);
-      throw error;
+  async initializeSeasonPurchase(
+    user: IUser,
+    params: {
+      contentId: string;
+      contentTitle: string;
+      seasonId: string;
+      seasonNumber: number;
+      amountInRwf: number;
     }
+  ): Promise<AugmentedResponse> {
+    const { contentId, contentTitle, seasonId, seasonNumber, amountInRwf } = params;
+    return this.initiateFlutterwavePayment({
+      user,
+      amount: amountInRwf,
+      txRefPrefix: 'SEASON',
+      title: 'Randa Plus Season Unlock',
+      description: `Unlock Season ${seasonNumber} of ${contentTitle}`,
+      meta: {
+        type: 'content',
+        unlockType: 'season',
+        contentId,
+        seasonId,
+        seasonNumber,
+        contentTitle
+      }
+    });
+  }
+
+  async initializeEpisodePurchase(
+    user: IUser,
+    params: {
+      contentId: string;
+      contentTitle: string;
+      episodeId: string;
+      episodeNumber: number;
+      seasonNumber: number;
+      amountInRwf: number;
+    }
+  ): Promise<AugmentedResponse> {
+    const { contentId, contentTitle, episodeId, episodeNumber, seasonNumber, amountInRwf } = params;
+    return this.initiateFlutterwavePayment({
+      user,
+      amount: amountInRwf,
+      txRefPrefix: 'EPISODE',
+      title: 'Randa Plus Episode Unlock',
+      description: `Unlock Episode ${episodeNumber} (Season ${seasonNumber}) of ${contentTitle}`,
+      meta: {
+        type: 'content',
+        unlockType: 'episode',
+        contentId,
+        episodeId,
+        episodeNumber,
+        seasonNumber,
+        contentTitle
+      }
+    });
   }
 
   /**

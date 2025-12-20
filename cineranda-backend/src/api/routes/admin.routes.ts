@@ -10,6 +10,8 @@ router.use(authenticate, restrictToAdmin);
 
 // --- Admin User Management ---
 router.post('/users/create-admin', adminController.createAdmin);
+router.delete('/users/:userId', adminController.deleteUser);
+router.patch('/profile/two-factor', adminController.updateTwoFactorStatus);
 
 // --- Admin Content Management ---
 // (You would add routes for movie upload, edit, delete here)

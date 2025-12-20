@@ -11,13 +11,15 @@ router.get('/wallet/balance', authenticate, paymentController.getWalletBalance);
 
 // Content purchase routes
 router.post('/content/purchase', authenticate, paymentController.initiateContentPurchase);
-router.post('/content/purchase/wallet', authenticate, paymentController.purchaseContentWithWallet);
+router.post('/content/purchase/wallet', authenticate, paymentController.purchaseContentWithWallet); // Legacy alias
 
-// Season purchase route
-router.post('/season/purchase/wallet', authenticate, paymentController.purchaseSeasonWithWallet);
+// Season purchase routes
+router.post('/season/purchase', authenticate, paymentController.initiateSeasonPurchase);
+router.post('/season/purchase/wallet', authenticate, paymentController.initiateSeasonPurchase); // Legacy alias
 
-// Episode purchase route
-router.post('/episode/purchase/wallet', authenticate, paymentController.purchaseEpisodeWithWallet);
+// Episode purchase routes
+router.post('/episode/purchase', authenticate, paymentController.initiateEpisodePurchase);
+router.post('/episode/purchase/wallet', authenticate, paymentController.initiateEpisodePurchase); // Legacy alias
 
 // Purchase history
 router.get('/history', authenticate, paymentController.getUserPurchases);

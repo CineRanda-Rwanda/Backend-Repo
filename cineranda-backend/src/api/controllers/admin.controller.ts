@@ -165,4 +165,68 @@ export class AdminController {
       next(error);
     }
   };
+
+  deleteUser = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const { userId } = req.params;
+
+      if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+        return next(new AppError('A valid userId parameter is required.', 400));
+      }
+
+      const deletedUser = await User.findByIdAndDelete(userId);
+
+      if (!deletedUser) {
+        return next(new AppError('User not found.', 404));
+      }
+
+      res.status(200).json({
+        status: 'success',
+        message: 'User deleted successfully.'
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  updateTwoFactorStatus = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const adminId = req.user?._id;
+      const { enabled } = req.body;
+
+      if (!adminId) {
+        return next(new AppError('Admin context missing. Please log in again.', 401));
+      }
+
+      if (typeof enabled !== 'boolean') {
+        return next(new AppError('The "enabled" field must be provided as true or false.', 400));
+      }
+
+      const adminUser = await User.findById(adminId).select('+twoFactorSecret');
+
+      if (!adminUser) {
+        return next(new AppError('Admin account not found.', 404));
+      }
+
+      if (enabled) {
+        if (!adminUser.twoFactorSecret) {
+          return next(new AppError('Complete 2FA setup before enabling it.', 400));
+        }
+        adminUser.isTwoFactorEnabled = true;
+      } else {
+        adminUser.isTwoFactorEnabled = false;
+        adminUser.twoFactorSecret = undefined;
+      }
+
+      await adminUser.save();
+
+      res.status(200).json({
+        status: 'success',
+        message: `Two-factor authentication ${enabled ? 'enabled' : 'disabled'} for admin.`,
+        data: { isTwoFactorEnabled: adminUser.isTwoFactorEnabled }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
 }

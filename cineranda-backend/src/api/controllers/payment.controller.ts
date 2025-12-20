@@ -6,6 +6,7 @@ import { NotificationService } from '../../core/services/notification.service';
 import { AuthRequest } from '../../middleware/auth.middleware';
 import { Content, IContent } from '../../data/models/movie.model';
 import { User } from '../../data/models/user.model';
+import { IPurchase } from '../../data/models/purchase.model';
 import AppError from '../../utils/AppError';
 import config from '../../config';
 import { resolvePriceFromFields } from '../../utils/pricing';
@@ -108,6 +109,149 @@ export class PaymentController {
     return 0;
   }
 
+  private async fulfillContentUnlock(purchase: IPurchase, txRef: string): Promise<void> {
+    const meta = (purchase.meta || {}) as Record<string, any>;
+    const unlockType = meta.unlockType || 'content';
+    const userId = purchase.userId?.toString();
+
+    if (!userId) {
+      throw new AppError('Purchase missing user reference', 500);
+    }
+
+    if (!purchase.contentId) {
+      throw new AppError('Purchase missing content reference', 500);
+    }
+
+    const content = await Content.findById(purchase.contentId).select('title posterImageUrl');
+    const contentTitle = meta.contentTitle || content?.title || 'your content';
+    const actionBase = `/watch/${purchase.contentId.toString()}`;
+    const transactionEntry = {
+      type: 'purchase',
+      amount: -purchase.amountPaid,
+      description: `Purchased ${contentTitle} via Flutterwave`,
+      reference: txRef,
+      createdAt: new Date()
+    };
+
+    if (unlockType === 'season') {
+      const seasonId = meta.seasonId;
+      const seasonNumber = meta.seasonNumber;
+      if (!seasonId || seasonNumber === undefined) {
+        throw new AppError('Incomplete season metadata for purchase fulfillment', 500);
+      }
+      if (!mongoose.Types.ObjectId.isValid(seasonId)) {
+        throw new AppError('Invalid season identifier on purchase record', 500);
+      }
+
+      await User.findByIdAndUpdate(
+        purchase.userId,
+        {
+          $push: {
+            purchasedSeasons: {
+              contentId: purchase.contentId,
+              seasonId: new mongoose.Types.ObjectId(seasonId),
+              seasonNumber,
+              purchaseDate: new Date(),
+              price: purchase.amountPaid,
+              currency: 'RWF',
+              episodeIdsAtPurchase: meta.episodeIdsAtPurchase || []
+            },
+            transactions: transactionEntry
+          }
+        }
+      );
+
+      const notificationMeta: Record<string, any> = { actionType: 'content' };
+      notificationMeta.actionUrl = `${actionBase}?season=${seasonNumber}`;
+      if (content?.posterImageUrl) {
+        notificationMeta.imageUrl = content.posterImageUrl;
+      }
+
+      await this.notificationService.sendSystemNotification(
+        userId,
+        'Season Unlocked',
+        `You have unlocked Season ${seasonNumber} of ${contentTitle}.`,
+        notificationMeta
+      );
+      return;
+    }
+
+    if (unlockType === 'episode') {
+      const episodeId = meta.episodeId;
+      const seasonNumber = meta.seasonNumber;
+      if (!episodeId || seasonNumber === undefined) {
+        throw new AppError('Incomplete episode metadata for purchase fulfillment', 500);
+      }
+      if (!mongoose.Types.ObjectId.isValid(episodeId)) {
+        throw new AppError('Invalid episode identifier on purchase record', 500);
+      }
+
+      await User.findByIdAndUpdate(
+        purchase.userId,
+        {
+          $push: {
+            purchasedEpisodes: {
+              contentId: purchase.contentId,
+              episodeId: new mongoose.Types.ObjectId(episodeId),
+              purchaseDate: new Date(),
+              price: purchase.amountPaid,
+              currency: 'RWF'
+            },
+            transactions: transactionEntry
+          }
+        }
+      );
+
+      const episodeNumber = meta.episodeNumber;
+      const notificationMeta: Record<string, any> = { actionType: 'content' };
+      notificationMeta.actionUrl = `${actionBase}?season=${seasonNumber}&episode=${episodeId}`;
+      if (content?.posterImageUrl) {
+        notificationMeta.imageUrl = content.posterImageUrl;
+      }
+
+      await this.notificationService.sendSystemNotification(
+        userId,
+        'Episode Unlocked',
+        `You have unlocked ${contentTitle} - Season ${seasonNumber}, Episode ${episodeNumber}.`,
+        notificationMeta
+      );
+      return;
+    }
+
+    const purchaseEntry: any = {
+      contentId: purchase.contentId,
+      purchaseDate: new Date(),
+      price: purchase.amountPaid,
+      currency: 'RWF'
+    };
+    if (Array.isArray(meta.episodeIdsAtPurchase) && meta.episodeIdsAtPurchase.length) {
+      purchaseEntry.episodeIdsAtPurchase = meta.episodeIdsAtPurchase;
+    }
+
+    await User.findByIdAndUpdate(
+      purchase.userId,
+      {
+        $push: {
+          purchasedContent: purchaseEntry,
+          transactions: transactionEntry
+        }
+      }
+    );
+
+    const notificationMeta: Record<string, any> = { actionType: 'content' };
+    notificationMeta.actionUrl = actionBase;
+    if (content?.posterImageUrl) {
+      notificationMeta.imageUrl = content.posterImageUrl;
+    }
+
+    await this.notificationService.sendSystemNotification(
+      userId,
+      'Purchase Successful',
+      `You have successfully purchased "${contentTitle}".`,
+      notificationMeta
+    );
+  }
+
   /**
    * Initialize payment for content purchase
    */
@@ -127,6 +271,18 @@ export class PaymentController {
       const content = await Content.findById(contentId);
       if (!content) {
         return next(new AppError('Content not found', 404));
+      }
+
+      const user = await User.findById(req.user._id);
+      if (!user) {
+        return next(new AppError('User not found', 404));
+      }
+
+      const alreadyPurchasedContent = user.purchasedContent?.some(
+        (pc: any) => pc.contentId?.toString() === contentId
+      );
+      if (alreadyPurchasedContent) {
+        return next(new AppError('You already own this content', 400));
       }
 
       // Get correct pricing based on content type (RWF only)
@@ -163,6 +319,8 @@ export class PaymentController {
           'content',
           {
             flutterwave: response.data,
+            unlockType: 'content',
+            contentTitle: content.title,
             discountApplied: content.contentType === 'Series' ? content.seriesDiscountPercent : 0,
             originalPrice: content.contentType === 'Series' ? content.totalSeriesPrice : price
           }
@@ -292,491 +450,279 @@ export class PaymentController {
    * Purchase content using wallet balance
    */
   purchaseContentWithWallet = async (req: AuthRequest, res: Response, next: NextFunction) => {
-    try {
-      if (!req.user) {
-        return next(new AppError('Authentication required', 401));
-      }
-
-      const { contentId } = req.body;
-      
-      if (!contentId) {
-        return next(new AppError('Content ID is required', 400));
-      }
-
-      // Find content
-      const content = await Content.findById(contentId);
-      if (!content) {
-        return next(new AppError('Content not found', 404));
-      }
-
-      // Get fresh user data
-      const user = await User.findById(req.user._id);
-      if (!user) {
-        return next(new AppError('User not found', 404));
-      }
-
-      // Get price (RWF only)
-      const price = await this.ensureContentPricing(content);
-
-      if (price <= 0) {
-        return next(new AppError('Invalid content pricing', 400));
-      }
-
-      // Compute user's total available funds (wallet bonus + wallet balance)
-      const walletTotal = (user.wallet?.bonusBalance || 0) + (user.wallet?.balance || 0);
-      if (walletTotal < price) {
-        return next(new AppError(
-          `Insufficient balance. You need ${price} RWF but have ${walletTotal} RWF.`,
-          400
-        ));
-      }
-
-      // Check if already purchased
-      const alreadyPurchased = await this.paymentRepository.checkContentPurchase(
-        String(user._id),
-        contentId
-      );
-
-      if (alreadyPurchased) {
-        return next(new AppError('You have already purchased this content', 400));
-      }
-
-      // 1. Deduct from user's wallet (bonus used first) and add purchasedContent
-      await (user as any).deductFromWallet(price, 'purchase', `Purchased ${content.title}${content.contentType === 'Series' && content.seriesDiscountPercent ? ` (${content.seriesDiscountPercent}% discount)` : ''}`);
-
-      // Prepare purchasedContent entry. For Series, snapshot included episode IDs at purchase time
-      const purchaseEntry: any = {
-        contentId: contentId,
-        purchaseDate: new Date(),
-        price: price,
-        currency: 'RWF'
-      };
-
-      if (content.contentType === 'Series') {
-        // Collect all current episode ids for snapshot
-        const episodeIds: string[] = [];
-        (content.seasons || []).forEach((s: any) => {
-          (s.episodes || []).forEach((e: any) => {
-            if (e && e._id) episodeIds.push(e._id.toString());
-          });
-        });
-        purchaseEntry.episodeIdsAtPurchase = episodeIds;
-      }
-
-      const updatedUser = await User.findByIdAndUpdate(
-        user._id,
-        {
-          $push: {
-            purchasedContent: purchaseEntry,
-            transactions: {
-              type: 'purchase',
-              amount: -price,
-              description: `Purchased ${content.title}${content.contentType === 'Series' && content.seriesDiscountPercent ? ` (${content.seriesDiscountPercent}% discount)` : ''}`,
-              createdAt: new Date()
-            }
-          }
-        },
-        { new: true }
-      );
-
-      // 2. Create purchase record
-      const transactionRef = `WALLET-${Date.now()}`;
-      await this.paymentRepository.createPurchaseRecord(
-        String(user._id),
-        contentId,
-        content.contentType,
-        price,
-        'wallet',
-        transactionRef,
-        transactionRef,
-        'completed',
-        'content',
-        { 
-          purchaseDate: new Date(),
-          discountApplied: content.contentType === 'Series' ? content.seriesDiscountPercent : 0,
-          originalPrice: content.contentType === 'Series' ? content.totalSeriesPrice : price
-        }
-      );
-
-      // Send notification
-      await this.notificationService.sendSystemNotification(
-        String(user._id),
-        'Purchase Successful',
-        `You have successfully purchased "${content.title}". Enjoy watching!`,
-        {
-          actionType: 'content',
-          actionUrl: `/watch/${content._id}`,
-          imageUrl: content.posterImageUrl
-        }
-      );
-
-      res.status(200).json({
-        status: 'success',
-        message: 'Content purchased successfully',
-        data: {
-          content: {
-            _id: content._id,
-            title: content.title,
-            contentType: content.contentType,
-            ...(content.contentType === 'Series' && purchaseEntry.episodeIdsAtPurchase ? {
-              episodesIncluded: purchaseEntry.episodeIdsAtPurchase.length
-            } : {})
-          },
-          pricePaid: price,
-          currency: 'RWF',
-          originalPrice: content.contentType === 'Series' ? content.totalSeriesPrice : price,
-          discount: content.contentType === 'Series' ? `${content.seriesDiscountPercent}%` : '0%',
-          savings: content.contentType === 'Series' ? (content.totalSeriesPrice || 0) - price : 0,
-          remainingBalance: updatedUser?.wallet?.balance || 0,
-          remainingBonusBalance: updatedUser?.wallet?.bonusBalance || 0,
-          totalBalance: (updatedUser?.wallet?.balance || 0) + (updatedUser?.wallet?.bonusBalance || 0)
-        }
-      });
-    } catch (error) {
-      console.error('Wallet purchase error:', error);
-      next(error);
-    }
+    console.warn('Wallet-based purchases are deprecated. Redirecting to direct payment flow.');
+    return this.initiateContentPurchase(req, res, next);
   };
 
   /**
-   * Purchase individual episode using wallet balance
-   * NEW METHOD for episode purchases
+   * Initiate a pay-per-unlock payment for a single episode
    */
-  purchaseEpisodeWithWallet = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  initiateEpisodePurchase = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       if (!req.user) {
         return next(new AppError('Authentication required', 401));
       }
 
       const { contentId, seasonNumber, episodeId } = req.body;
-      
-      if (!contentId || !seasonNumber || !episodeId) {
+
+      if (!contentId || seasonNumber === undefined || !episodeId) {
         return next(new AppError('Content ID, season number, and episode ID are required', 400));
       }
 
-      // Find series
+      const parsedSeasonNumber = Number(seasonNumber);
+      if (!Number.isFinite(parsedSeasonNumber)) {
+        return next(new AppError('Invalid season number', 400));
+      }
+
       const series = await Content.findOne({ _id: contentId, contentType: 'Series' });
       if (!series) {
         return next(new AppError('Series not found', 404));
       }
 
-      // Find the specific season and episode
-      const season = series.seasons?.find((s: any) => s.seasonNumber === parseInt(seasonNumber));
+      const season = series.seasons?.find((s: any) => s.seasonNumber === parsedSeasonNumber);
       if (!season) {
         return next(new AppError('Season not found', 404));
       }
 
-      const episode = season.episodes.find((e: any) => e._id.toString() === episodeId);
+      const episode = season.episodes?.find((e: any) => e?._id?.toString() === episodeId);
       if (!episode) {
         return next(new AppError('Episode not found', 404));
       }
 
-      // Check if episode is free
       if (episode.isFree) {
         return next(new AppError('This episode is free to watch', 400));
       }
 
-      // Get fresh user data
       const user = await User.findById(req.user._id);
       if (!user) {
         return next(new AppError('User not found', 404));
       }
 
-      // Determine episode price (RWF only)
-      const episodePrice = episode.price || 0;
+      // Prevent duplicate unlocks
+      const seriesPurchase = user.purchasedContent?.find(
+        (pc: any) => pc.contentId?.toString() === contentId
+      );
+      if (seriesPurchase) {
+        const episodeWasAvailable = seriesPurchase.episodeIdsAtPurchase?.includes(episodeId);
+        if (episodeWasAvailable) {
+          return next(new AppError('You already own this content', 400));
+        }
+      }
 
+      const hasSeason = user.purchasedSeasons?.some(
+        (ps: any) => ps.seasonId?.toString() === season._id?.toString()
+      );
+      if (hasSeason) {
+        return next(new AppError('You already own this season', 400));
+      }
+
+      const alreadyPurchasedEpisode = user.purchasedEpisodes?.some(
+        (pe: any) => pe.episodeId?.toString() === episodeId
+      );
+      if (alreadyPurchasedEpisode) {
+        return next(new AppError('You already own this episode', 400));
+      }
+
+      const episodePrice = this.getUnifiedPrice(episode);
       if (episodePrice <= 0) {
         return next(new AppError('Invalid episode pricing', 400));
       }
 
-      // Compute user's total available balance (wallet only)
-      const walletTotal = (user.wallet?.bonusBalance || 0) + (user.wallet?.balance || 0);
-      if (walletTotal < episodePrice) {
-        return next(new AppError(
-          `Insufficient balance. You need ${episodePrice} RWF but have ${walletTotal} RWF.`, 
-          400
-        ));
+      if (!episode._id) {
+        return next(new AppError('Episode reference is invalid', 500));
       }
 
-      // Check if already purchased the full series
-      const seriesPurchase = user.purchasedContent?.find(
-        (pc: any) => pc.contentId?.toString() === contentId
-      );
-      
-      if (seriesPurchase) {
-        // Allow purchasing if episode was added AFTER series purchase (locked episode)
-        const episodeWasAvailable = seriesPurchase.episodeIdsAtPurchase?.includes(episodeId);
-        
-        if (episodeWasAvailable) {
-          return next(new AppError('You have already purchased the full series which includes this episode', 400));
-        }
-        // If episode wasn't available at purchase time, allow buying it separately
-      }
-
-      // Check if already purchased this episode
-      const alreadyPurchased = user.purchasedEpisodes?.some(
-        (pe: any) => pe.episodeId?.toString() === episodeId
-      );
-      
-      if (alreadyPurchased) {
-        return next(new AppError('You have already purchased this episode', 400));
-      }
-
-      // Deduct from wallet first (bonus then main)
-      await (user as any).deductFromWallet(episodePrice, 'purchase', `Purchased ${series.title} - S${seasonNumber}E${episode.episodeNumber}: ${episode.title}`);
-
-      const updatedUser = await User.findByIdAndUpdate(
-        user._id,
-        { 
-          $push: {
-            purchasedEpisodes: {
-              contentId: contentId,
-              episodeId: episodeId,
-              purchaseDate: new Date(),
-              price: episodePrice,
-              currency: 'RWF'
-            },
-            transactions: {
-              type: 'purchase',
-              amount: -episodePrice,
-              description: `Purchased ${series.title} - S${seasonNumber}E${episode.episodeNumber}: ${episode.title}`,
-              createdAt: new Date()
-            }
-          }
-        },
-        { new: true }
-      );
-
-      // Create purchase record
-      const transactionRef = `WALLET-EP-${Date.now()}`;
-      await this.paymentRepository.createPurchaseRecord(
-        String(user._id),
+      const response = await this.paymentService.initializeEpisodePurchase(user, {
         contentId,
-        'Episode',  // This is the contentType, not purchaseType
+        contentTitle: series.title,
+        episodeId: episode._id.toString(),
+        episodeNumber: episode.episodeNumber,
+        seasonNumber: parsedSeasonNumber,
+        amountInRwf: episodePrice
+      });
+
+      const txRef = response.generatedTxRef || response.data?.tx_ref || '';
+
+      await this.paymentRepository.createPurchaseRecord(
+        String(req.user._id),
+        contentId,
+        'Episode',
         episodePrice,
-        'wallet',
-        transactionRef,
-        transactionRef,
-        'completed',
-        'content',  // CHANGED from 'episode' to 'content'
-        { 
-          purchaseDate: new Date(),
-          episodeId: episodeId,
-          seasonNumber: seasonNumber,
+        'flutterwave',
+        response.data?.id?.toString() || 'unknown',
+        txRef,
+        'pending',
+        'content',
+        {
+          flutterwave: response.data,
+          unlockType: 'episode',
+          episodeId: episode._id.toString(),
           episodeNumber: episode.episodeNumber,
           episodeTitle: episode.title,
-          isEpisodePurchase: true  // ADDED flag to distinguish
-        }
-      );
-
-      // Send notification
-      await this.notificationService.sendSystemNotification(
-        String(user._id),
-        'Episode Purchased',
-        `You have successfully purchased ${series.title} - S${seasonNumber}E${episode.episodeNumber}.`,
-        {
-          actionType: 'content',
-          actionUrl: `/watch/${contentId}?season=${seasonNumber}&episode=${episodeId}`,
-          imageUrl: series.posterImageUrl
+          seasonId: season._id?.toString(),
+          seasonNumber: parsedSeasonNumber,
+          contentTitle: series.title,
+          price: episodePrice,
+          currency: 'RWF'
         }
       );
 
       res.status(200).json({
         status: 'success',
-        message: 'Episode purchased successfully',
         data: {
+          paymentLink: response.data?.link,
+          transactionRef: txRef,
+          amount: episodePrice,
+          currency: 'RWF',
           episode: {
             _id: episode._id,
             title: episode.title,
             episodeNumber: episode.episodeNumber,
-            seasonNumber: seasonNumber
+            seasonNumber: parsedSeasonNumber
           },
           series: {
             _id: series._id,
             title: series.title
-          },
-          pricing: {
-            pricePaid: episodePrice,
-            currency: 'RWF'
-          },
-          remainingBalance: updatedUser?.wallet?.balance || 0,
-          remainingBonusBalance: updatedUser?.wallet?.bonusBalance || 0,
-          totalBalance: (updatedUser?.wallet?.balance || 0) + (updatedUser?.wallet?.bonusBalance || 0)
+          }
         }
       });
     } catch (error) {
-      console.error('Episode purchase error:', error);
+      console.error('Episode payment initiation error:', error);
       next(error);
     }
   };
 
   /**
-   * Purchase a season with wallet
+   * Initiate a pay-per-unlock payment for an entire season
    */
-  purchaseSeasonWithWallet = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  initiateSeasonPurchase = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       if (!req.user) {
         return next(new AppError('Authentication required', 401));
       }
 
       const { contentId, seasonNumber } = req.body;
-      
-      if (!contentId || !seasonNumber) {
+      if (!contentId || seasonNumber === undefined) {
         return next(new AppError('Content ID and season number are required', 400));
       }
 
-      // Find series
+      const parsedSeasonNumber = Number(seasonNumber);
+      if (!Number.isFinite(parsedSeasonNumber)) {
+        return next(new AppError('Invalid season number', 400));
+      }
+
       const series = await Content.findOne({ _id: contentId, contentType: 'Series' });
       if (!series) {
         return next(new AppError('Series not found', 404));
       }
 
-      // Find the specific season
-      const season = series.seasons?.find((s: any) => s.seasonNumber === parseInt(seasonNumber));
+      const season = series.seasons?.find((s: any) => s.seasonNumber === parsedSeasonNumber);
       if (!season) {
         return next(new AppError('Season not found', 404));
       }
 
-      // Get fresh user data
       const user = await User.findById(req.user._id);
       if (!user) {
         return next(new AppError('User not found', 404));
       }
 
-      // Calculate season price (sum of all episode prices with series discount)
+      const hasFullSeries = user.purchasedContent?.some(
+        (pc: any) => pc.contentId?.toString() === contentId
+      );
+      if (hasFullSeries) {
+        return next(new AppError('You already own the full series', 400));
+      }
+
+      const alreadyPurchasedSeason = user.purchasedSeasons?.some(
+        (ps: any) => ps.seasonId?.toString() === season._id?.toString()
+      );
+      if (alreadyPurchasedSeason) {
+        return next(new AppError('You already own this season', 400));
+      }
+
       let seasonTotalPrice = 0;
       const episodeIds: string[] = [];
-      (season.episodes || []).forEach((e: any) => {
-        if (e && e._id) {
-          const episodePrice = e.price || 0;
-          seasonTotalPrice += episodePrice;
-          episodeIds.push(e._id.toString());
+      (season.episodes || []).forEach((episode: any) => {
+        if (episode && episode._id) {
+          seasonTotalPrice += this.getUnifiedPrice(episode);
+          episodeIds.push(episode._id.toString());
         }
       });
 
-      // Apply series discount if available
-      const discountPercent = series.seriesDiscountPercent || 0;
+      const discountPercentRaw = this.normalizePrice(series.seriesDiscountPercent);
+      const discountPercent = Math.min(Math.max(discountPercentRaw, 0), 100);
       const originalPrice = seasonTotalPrice;
-      const discountAmount = (seasonTotalPrice * discountPercent) / 100;
+      const discountAmount = Math.round((seasonTotalPrice * discountPercent) / 100);
       const finalPrice = seasonTotalPrice - discountAmount;
 
       if (finalPrice <= 0) {
         return next(new AppError('Invalid season pricing', 400));
       }
 
-      // Check wallet balance
-      const walletTotal = (user.wallet?.bonusBalance || 0) + (user.wallet?.balance || 0);
-      if (walletTotal < finalPrice) {
-        return next(new AppError(
-          `Insufficient balance. You need ${finalPrice} RWF but have ${walletTotal} RWF.`, 
-          400
-        ));
+      if (!season._id) {
+        return next(new AppError('Season reference is invalid', 500));
       }
 
-      // Check if already purchased the full series
-      const hasFullSeries = user.purchasedContent?.some(
-        (pc: any) => pc.contentId?.toString() === contentId
-      );
-      
-      if (hasFullSeries) {
-        return next(new AppError('You have already purchased the full series', 400));
-      }
+      const seasonId = season._id.toString();
 
-      // Check if already purchased this season
-      const alreadyPurchasedSeason = user.purchasedSeasons?.some(
-        (ps: any) => ps.seasonId?.toString() === season._id?.toString()
-      );
-      
-      if (alreadyPurchasedSeason) {
-        return next(new AppError('You have already purchased this season', 400));
-      }
+      const response = await this.paymentService.initializeSeasonPurchase(req.user, {
+        contentId,
+        contentTitle: series.title,
+        seasonId,
+        seasonNumber: parsedSeasonNumber,
+        amountInRwf: finalPrice
+      });
 
-      // Deduct from wallet
-      await (user as any).deductFromWallet(finalPrice, 'purchase', `Purchased ${series.title} - Season ${seasonNumber}`);
+      const txRef = response.generatedTxRef || response.data?.tx_ref || '';
 
-      const updatedUser = await User.findByIdAndUpdate(
-        user._id,
-        { 
-          $push: {
-            purchasedSeasons: {
-              contentId: contentId,
-              seasonId: season._id,
-              seasonNumber: parseInt(seasonNumber),
-              purchaseDate: new Date(),
-              price: finalPrice,
-              currency: 'RWF',
-              episodeIdsAtPurchase: episodeIds
-            },
-            transactions: {
-              type: 'purchase',
-              amount: -finalPrice,
-              description: `Purchased ${series.title} - Season ${seasonNumber}`,
-              createdAt: new Date()
-            }
-          }
-        },
-        { new: true }
-      );
-
-      // Create purchase record
-      const transactionRef = `WALLET-SEASON-${Date.now()}`;
       await this.paymentRepository.createPurchaseRecord(
-        String(user._id),
+        String(req.user._id),
         contentId,
         'Season',
         finalPrice,
-        'wallet',
-        transactionRef,
-        transactionRef,
-        'completed',
+        'flutterwave',
+        response.data?.id?.toString() || 'unknown',
+        txRef,
+        'pending',
         'content',
-        { 
-          purchaseDate: new Date(),
-          seasonId: season._id,
-          seasonNumber: parseInt(seasonNumber),
-          episodeIdsAtPurchase: episodeIds,
-          originalPrice: originalPrice,
-          discountPercent: discountPercent,
-          isSeasonPurchase: true
-        }
-      );
-
-      // Send notification
-      await this.notificationService.sendSystemNotification(
-        String(user._id),
-        'Season Purchased',
-        `You have successfully purchased Season ${seasonNumber} of ${series.title}.`,
         {
-          actionType: 'content',
-          actionUrl: `/watch/${contentId}?season=${seasonNumber}`,
-          imageUrl: series.posterImageUrl
+          flutterwave: response.data,
+          unlockType: 'season',
+          seasonId,
+          seasonNumber: parsedSeasonNumber,
+          episodeIdsAtPurchase: episodeIds,
+          originalPrice,
+          discountPercent,
+          finalPrice,
+          contentTitle: series.title
         }
       );
 
       res.status(200).json({
         status: 'success',
-        message: 'Season purchased successfully',
         data: {
+          paymentLink: response.data?.link,
+          transactionRef: txRef,
+          amount: finalPrice,
+          currency: 'RWF',
           season: {
             _id: season._id,
-            seasonNumber: parseInt(seasonNumber),
-            episodeCount: episodeIds.length,
-            episodesIncluded: episodeIds.length
+            seasonNumber: parsedSeasonNumber,
+            episodeCount: episodeIds.length
           },
           series: {
             _id: series._id,
             title: series.title
           },
           pricing: {
-            originalPrice: originalPrice,
-            discount: discountPercent,
-            finalPrice: finalPrice
-          },
-          remainingBalance: updatedUser?.wallet?.balance || 0
+            originalPrice,
+            discountPercent,
+            finalPrice
+          }
         }
       });
     } catch (error) {
-      console.error('Season purchase error:', error);
+      console.error('Season payment initiation error:', error);
       next(error);
     }
   };
@@ -826,43 +772,8 @@ export class PaymentController {
                   priority: 'high'
                 }
               );
-            } else if (purchase.purchaseType === 'content' && purchase.contentId) {
-              // FIX: Add content to user's purchasedContent
-              await User.findByIdAndUpdate(
-                purchase.userId,
-                {
-                  $push: {
-                    purchasedContent: {
-                      contentId: purchase.contentId,
-                      purchaseDate: new Date(),
-                      price: purchase.amountPaid,
-                      currency: 'RWF'
-                    },
-                    transactions: {
-                      type: 'purchase',
-                      amount: -purchase.amountPaid,
-                      description: `Purchased content via Flutterwave`,
-                      reference: tx_ref,
-                      createdAt: new Date()
-                    }
-                  }
-                }
-              );
-
-              // Send notification
-              const content = await Content.findById(purchase.contentId).select('title posterImageUrl');
-              if (content) {
-                 await this.notificationService.sendSystemNotification(
-                  purchase.userId.toString(),
-                  'Purchase Successful',
-                  `You have successfully purchased "${content.title}".`,
-                  {
-                    actionType: 'content',
-                    actionUrl: `/watch/${content._id}`,
-                    imageUrl: content.posterImageUrl
-                  }
-                );
-              }
+            } else if (purchase.purchaseType === 'content') {
+              await this.fulfillContentUnlock(purchase, tx_ref.toString());
             }
             
             // Redirect to success page
@@ -926,43 +837,8 @@ export class PaymentController {
                 priority: 'high'
               }
             );
-          } else if (purchase.purchaseType === 'content' && purchase.contentId) {
-            // FIX: Add content to user's purchasedContent
-            await User.findByIdAndUpdate(
-              purchase.userId,
-              {
-                $push: {
-                  purchasedContent: {
-                    contentId: purchase.contentId,
-                    purchaseDate: new Date(),
-                    price: purchase.amountPaid,
-                    currency: 'RWF'
-                  },
-                  transactions: {
-                    type: 'purchase',
-                    amount: -purchase.amountPaid,
-                    description: `Purchased content via Flutterwave webhook`,
-                    reference: txRef,
-                    createdAt: new Date()
-                  }
-                }
-              }
-            );
-
-            // Send notification
-            const content = await Content.findById(purchase.contentId).select('title posterImageUrl');
-            if (content) {
-               await this.notificationService.sendSystemNotification(
-                purchase.userId.toString(),
-                'Purchase Successful',
-                `You have successfully purchased "${content.title}".`,
-                {
-                  actionType: 'content',
-                  actionUrl: `/watch/${content._id}`,
-                  imageUrl: content.posterImageUrl
-                }
-              );
-            }
+          } else if (purchase.purchaseType === 'content') {
+            await this.fulfillContentUnlock(purchase, txRef);
           }
         }
       }

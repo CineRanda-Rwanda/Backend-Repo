@@ -510,20 +510,15 @@ export class AuthController {
         return next(new AppError('User not found on request. Please log in again.', 401));
       }
 
-      // Validate preferredLanguage if provided
-      const validLanguages = ['kinyarwanda', 'english', 'french'];
-      if (req.body.preferredLanguage && !validLanguages.includes(req.body.preferredLanguage)) {
-        return next(new AppError('Invalid language. Must be one of: kinyarwanda, english, french', 400));
+      const { username } = req.body;
+      if (typeof username !== 'string' || !username.trim()) {
+        return next(new AppError('Username is required', 400));
       }
-
-      // Validate theme if provided
-      const validThemes = ['light', 'dark'];
-      if (req.body.theme && !validThemes.includes(req.body.theme)) {
-        return next(new AppError('Invalid theme. Must be one of: light, dark', 400));
-      }
+      const sanitizedUsername = username.trim();
       
-      // Call the existing service method. It's safe for both users and admins.
-      const updatedUser = await this.authService.updateProfile(userId.toString(), req.body);
+      const updatedUser = await this.authService.updateProfile(userId.toString(), {
+        username: sanitizedUsername
+      });
 
       res.status(200).json({
         status: 'success',

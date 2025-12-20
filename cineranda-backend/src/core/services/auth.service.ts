@@ -488,18 +488,23 @@ export class AuthService {
     return userResponse;
   }
 
-  async updateProfile(userId: string, userData: {
-    preferredLanguage?: 'kinyarwanda' | 'english' | 'french';
-    theme?: 'light' | 'dark';
-  }): Promise<Partial<IUser>> {
-    // Make sure we're only passing valid values
-    const validData: Partial<IUser> = {};
+  async updateProfile(userId: string, userData: { username: string }): Promise<Partial<IUser>> {
+    const trimmedUsername = userData.username?.trim();
 
-    if (userData.preferredLanguage) validData.preferredLanguage = userData.preferredLanguage;
-    if (userData.theme) validData.theme = userData.theme;
+    if (!trimmedUsername) {
+      throw new AppError('Username is required', 400);
+    }
+
+    const existingUser = await this.userRepository.findOne({
+      username: trimmedUsername,
+      _id: { $ne: userId }
+    });
+
+    if (existingUser) {
+      throw new AppError('Username already taken', 400);
+    }
     
-    // Cast to UserWithId
-    const user = await this.userRepository.update(userId, validData) as UserWithId;
+    const user = await this.userRepository.update(userId, { username: trimmedUsername }) as UserWithId;
     
     if (!user) {
       throw new AppError('User not found', 404);
@@ -507,6 +512,7 @@ export class AuthService {
     
     const userResponse = { ...user.toObject() };
     delete userResponse.password;
+    delete (userResponse as any).pin;
     
     return userResponse;
   }
