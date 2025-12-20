@@ -12,6 +12,12 @@ router.use(authorize(['admin']));
 // GET /api/v1/users/by-phone - Find user by phone number
 router.get('/by-phone', userController.getUserByPhone);
 
+// GET /api/v1/users/by-email - Find user by email
+router.get('/by-email', userController.getUserByEmail);
+
+// GET /api/v1/users/search - Keyword search across multiple fields
+router.get('/search', userController.searchUsers);
+
 // GET /api/v1/users - Get all users
 router.get('/', userController.getAllUsers);
 

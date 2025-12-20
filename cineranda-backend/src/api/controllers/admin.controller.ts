@@ -84,6 +84,207 @@ export class AdminController {
     }
   };
 
+  unlockContentForUser = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const { userId } = req.params;
+      const { contentId, unlockType, seasonId, seasonNumber, episodeId } = req.body;
+
+      if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+        return next(new AppError('A valid userId parameter is required.', 400));
+      }
+
+      if (!contentId || !mongoose.Types.ObjectId.isValid(contentId)) {
+        return next(new AppError('A valid contentId is required.', 400));
+      }
+
+      const user = await User.findById(userId);
+      if (!user) {
+        return next(new AppError('User not found.', 404));
+      }
+
+      const ContentModel = mongoose.model('Content');
+      const content = await ContentModel.findById(contentId);
+
+      if (!content) {
+        return next(new AppError('Content not found.', 404));
+      }
+
+      const normalizedType = (typeof unlockType === 'string'
+        ? unlockType
+        : content.contentType === 'Series'
+          ? 'series'
+          : 'movie'
+      ).toLowerCase();
+
+      const parsedSeasonNumber = seasonNumber !== undefined ? Number(seasonNumber) : undefined;
+      if (seasonNumber !== undefined && !Number.isFinite(parsedSeasonNumber)) {
+        return next(new AppError('seasonNumber must be a valid number.', 400));
+      }
+
+      if (seasonId && (!mongoose.Types.ObjectId.isValid(seasonId))) {
+        return next(new AppError('seasonId must be a valid identifier.', 400));
+      }
+
+      if (episodeId && !mongoose.Types.ObjectId.isValid(episodeId)) {
+        return next(new AppError('episodeId must be a valid identifier.', 400));
+      }
+
+      if (normalizedType === 'season' && !seasonId && parsedSeasonNumber === undefined) {
+        return next(new AppError('Provide either seasonId or seasonNumber to unlock a season.', 400));
+      }
+
+      if (normalizedType === 'episode' && !episodeId) {
+        return next(new AppError('episodeId is required to unlock an episode.', 400));
+      }
+
+      const ensureArray = <T>(value: T[] | undefined | null): T[] => value || [];
+
+      const collectEpisodeIds = (seasons: any[] = []): string[] => {
+        const ids: string[] = [];
+        seasons.forEach((season: any) => {
+          (season?.episodes || []).forEach((episode: any) => {
+            if (episode?._id) {
+              ids.push(episode._id.toString());
+            }
+          });
+        });
+        return ids;
+      };
+
+      const findSeason = (): any => {
+        if (!content.seasons || !Array.isArray(content.seasons)) {
+          return null;
+        }
+
+        let targetSeason: any = null;
+
+        if (seasonId && mongoose.Types.ObjectId.isValid(seasonId)) {
+          targetSeason = content.seasons.find((season: any) => season?._id?.toString() === seasonId);
+        }
+
+        if (!targetSeason && parsedSeasonNumber !== undefined) {
+          targetSeason = content.seasons.find((season: any) => season?.seasonNumber === parsedSeasonNumber);
+        }
+
+        return targetSeason;
+      };
+
+      const findEpisode = () => {
+        if (!episodeId) {
+          return { episode: null, parentSeason: null };
+        }
+
+        if (!content.seasons || !Array.isArray(content.seasons)) {
+          return { episode: null, parentSeason: null };
+        }
+
+        for (const season of content.seasons) {
+          if (parsedSeasonNumber !== undefined && season?.seasonNumber !== parsedSeasonNumber) {
+            continue;
+          }
+          if (seasonId && mongoose.Types.ObjectId.isValid(seasonId) && season?._id?.toString() !== seasonId) {
+            continue;
+          }
+
+          const episode = (season?.episodes || []).find((ep: any) => ep?._id?.toString() === episodeId);
+          if (episode) {
+            return { episode, parentSeason: season };
+          }
+        }
+
+        return { episode: null, parentSeason: null };
+      };
+
+      if (['movie', 'series', 'content'].includes(normalizedType)) {
+        user.purchasedContent = ensureArray(user.purchasedContent);
+
+        const alreadyOwned = user.purchasedContent.some(
+          (purchase: any) => purchase?.contentId?.toString() === contentId
+        );
+
+        if (alreadyOwned) {
+          return next(new AppError('User already owns this content.', 400));
+        }
+
+        const episodeIdsAtPurchase = content.contentType === 'Series'
+          ? collectEpisodeIds(content.seasons)
+          : [];
+
+        user.purchasedContent.push({
+          contentId: content._id,
+          purchaseDate: new Date(),
+          price: 0,
+          currency: 'RWF',
+          episodeIdsAtPurchase
+        });
+      } else if (normalizedType === 'season') {
+        const season = findSeason();
+        if (!season || !season?._id) {
+          return next(new AppError('Season not found for provided identifiers.', 404));
+        }
+
+        user.purchasedSeasons = ensureArray(user.purchasedSeasons);
+        const alreadyOwnedSeason = user.purchasedSeasons.some(
+          (entry: any) => entry?.seasonId?.toString() === season._id.toString()
+        );
+
+        if (alreadyOwnedSeason) {
+          return next(new AppError('User already owns this season.', 400));
+        }
+
+        user.purchasedSeasons.push({
+          contentId: content._id,
+          seasonId: season._id,
+          seasonNumber: season.seasonNumber,
+          purchaseDate: new Date(),
+          price: 0,
+          currency: 'RWF',
+          episodeIdsAtPurchase: (season.episodes || [])
+            .filter((ep: any) => ep?._id)
+            .map((ep: any) => ep._id.toString())
+        });
+      } else if (normalizedType === 'episode') {
+        const { episode } = findEpisode();
+        if (!episode || !episode?._id) {
+          return next(new AppError('Episode not found for provided identifiers.', 404));
+        }
+
+        user.purchasedEpisodes = ensureArray(user.purchasedEpisodes);
+        const alreadyOwnedEpisode = user.purchasedEpisodes.some(
+          (entry: any) => entry?.episodeId?.toString() === episode._id.toString()
+        );
+
+        if (alreadyOwnedEpisode) {
+          return next(new AppError('User already owns this episode.', 400));
+        }
+
+        user.purchasedEpisodes.push({
+          contentId: content._id,
+          episodeId: episode._id,
+          purchaseDate: new Date(),
+          price: 0,
+          currency: 'RWF'
+        });
+      } else {
+        return next(new AppError('Invalid unlockType. Use movie, series, season, or episode.', 400));
+      }
+
+      await user.save();
+      const updatedUser = await User.findById(userId).select('-pin');
+
+      res.status(200).json({
+        status: 'success',
+        message: `Unlocked ${normalizedType} for user successfully.`,
+        data: {
+          user: updatedUser,
+          unlockType: normalizedType
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
   /**
    * Placeholder for analytics dashboard data.
    */

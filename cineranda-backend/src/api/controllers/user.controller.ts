@@ -120,6 +120,100 @@ export class UserController {
     }
   };
 
+  // Get user by email
+  getUserByEmail = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { email } = req.query;
+
+      if (!email || typeof email !== 'string') {
+        return next(new AppError('Valid email is required', 400));
+      }
+
+      const normalizedEmail = email.trim().toLowerCase();
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(normalizedEmail)) {
+        return next(new AppError('Invalid email format', 400));
+      }
+
+      const user = await User.findOne({ email: normalizedEmail }).select('-pin');
+
+      if (!user) {
+        return next(new AppError('No user found with that email', 404));
+      }
+
+      res.status(200).json({
+        status: 'success',
+        data: {
+          user
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // Search users by keyword
+  searchUsers = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { q } = req.query;
+
+      if (!q || typeof q !== 'string' || !q.trim()) {
+        return next(new AppError('Search query is required', 400));
+      }
+
+      const searchTerm = q.trim();
+      const limit = Math.min(parseInt(req.query.limit as string) || 25, 100);
+      const page = parseInt(req.query.page as string) || 1;
+      const skip = (page - 1) * limit;
+
+      const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(escapeRegex(searchTerm), 'i');
+
+      const orConditions: any[] = [
+        { username: regex },
+        { email: regex },
+        { phoneNumber: regex },
+        { firstName: regex },
+        { lastName: regex }
+      ];
+
+      const numericSearch = searchTerm.replace(/\D/g, '');
+      if (numericSearch.length >= 4) {
+        orConditions.push({ phoneNumber: new RegExp(numericSearch + '$', 'i') });
+      }
+
+      if (mongoose.Types.ObjectId.isValid(searchTerm)) {
+        orConditions.push({ _id: searchTerm });
+      }
+
+      const filter = { $or: orConditions };
+
+      const users = await User.find(filter)
+        .select('-pin')
+        .skip(skip)
+        .limit(limit)
+        .sort({ createdAt: -1 });
+
+      const total = await User.countDocuments(filter);
+
+      res.status(200).json({
+        status: 'success',
+        results: users.length,
+        pagination: {
+          total,
+          page,
+          pages: Math.ceil(total / limit),
+          limit
+        },
+        data: {
+          users
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
   // Update user details (admin only)
   updateUser = async (req: Request, res: Response, next: NextFunction) => {
     try {
