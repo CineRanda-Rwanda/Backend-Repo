@@ -9,21 +9,6 @@ const contentController = new ContentController();
 
 // --- ADMIN-SPECIFIC ROUTES (Must come FIRST before all other routes) ---
 
-// ADMIN: Rating control endpoints
-router.patch(
-  '/admin/batch-ratings',
-  authenticate,
-  authorize(['admin']),
-  contentController.batchToggleRatings
-);
-
-router.patch(
-  '/admin/:id/ratings',
-  authenticate,
-  authorize(['admin']),
-  contentController.toggleContentRatings
-);
-
 // GET /api/v1/content/admin/movies - Get all movies for admin
 router.get(
   '/admin/movies',

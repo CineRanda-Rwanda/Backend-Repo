@@ -22,6 +22,7 @@ router.post('/users/:userId/unlock-content', adminController.unlockContentForUse
 router.post('/users/grant-access', adminController.grantFreeAccess);
 
 // --- Admin Analytics ---
+router.get('/analytics', adminController.getAnalytics);
 router.get('/analytics/dashboard', adminController.getAnalytics);
 
 export default router;

@@ -286,81 +286,607 @@ export class AdminController {
   };
 
   /**
-   * Placeholder for analytics dashboard data.
+   * Rich analytics snapshot for the admin dashboard.
    */
   getAnalytics = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const Content = mongoose.model('Content');
       const Purchase = mongoose.model('Purchase');
-      
-      // Overview stats
+
+      interface TimeFrame {
+        start: Date;
+        end: Date;
+        previousStart: Date;
+        previousEnd: Date;
+      }
+
+      interface RangeStat {
+        value: number;
+        previous: number;
+        changePercent: number;
+        baseBefore: number;
+        percentOfExisting: number;
+      }
+
+      const now = new Date();
+      const startOfToday = new Date(now);
+      startOfToday.setHours(0, 0, 0, 0);
+
+      const subtractDays = (base: Date, days: number) => {
+        const clone = new Date(base);
+        clone.setDate(clone.getDate() - days);
+        return clone;
+      };
+
+      const buildFrame = (start: Date, end: Date): TimeFrame => {
+        const span = Math.max(end.getTime() - start.getTime(), 1);
+        const previousStart = new Date(start.getTime() - span);
+        return {
+          start,
+          end,
+          previousStart,
+          previousEnd: start
+        };
+      };
+
+      const frames: Record<string, TimeFrame> = {
+        today: buildFrame(startOfToday, now),
+        thisWeek: buildFrame(subtractDays(now, 7), now),
+        last14Days: buildFrame(subtractDays(now, 14), now),
+        last30Days: buildFrame(subtractDays(now, 30), now),
+        last90Days: buildFrame(subtractDays(now, 90), now)
+      };
+
+      const changePercent = (current: number, previous: number) => {
+        if (previous === 0) {
+          return current > 0 ? 100 : 0;
+        }
+        return Number((((current - previous) / previous) * 100).toFixed(2));
+      };
+
+      const percentOfBase = (value: number, base: number) => {
+        if (base <= 0) {
+          return value > 0 ? 100 : 0;
+        }
+        return Number(((value / base) * 100).toFixed(2));
+      };
+
+      const countUsersInFrame = async (frame: TimeFrame): Promise<RangeStat> => {
+        const current = await User.countDocuments({ createdAt: { $gte: frame.start, $lt: frame.end } });
+        const previous = await User.countDocuments({ createdAt: { $gte: frame.previousStart, $lt: frame.previousEnd } });
+        const baseBefore = await User.countDocuments({ createdAt: { $lt: frame.start } });
+        return {
+          value: current,
+          previous,
+          changePercent: changePercent(current, previous),
+          baseBefore,
+          percentOfExisting: percentOfBase(current, baseBefore)
+        };
+      };
+
+      const purchaseMatchBase: Record<string, any> = {
+        status: 'completed',
+        purchaseType: 'content'
+      };
+
+      const sumRevenueBetween = async (start: Date, end: Date): Promise<number> => {
+        const [result] = await Purchase.aggregate([
+          { $match: { ...purchaseMatchBase, createdAt: { $gte: start, $lt: end } } },
+          { $group: { _id: null, total: { $sum: '$amountPaid' } } }
+        ]);
+        return result?.total || 0;
+      };
+
+      const sumRevenueBefore = async (end: Date): Promise<number> => {
+        const [result] = await Purchase.aggregate([
+          { $match: { ...purchaseMatchBase, createdAt: { $lt: end } } },
+          { $group: { _id: null, total: { $sum: '$amountPaid' } } }
+        ]);
+        return result?.total || 0;
+      };
+
+      const userGrowth: Record<string, RangeStat> = {};
+      for (const [key, frame] of Object.entries(frames)) {
+        userGrowth[key] = await countUsersInFrame(frame);
+      }
+
+      const revenueGrowth: Record<string, RangeStat> = {};
+      for (const [key, frame] of Object.entries(frames)) {
+        const current = await sumRevenueBetween(frame.start, frame.end);
+        const previous = await sumRevenueBetween(frame.previousStart, frame.previousEnd);
+        const baseBefore = await sumRevenueBefore(frame.start);
+        revenueGrowth[key] = {
+          value: current,
+          previous,
+          changePercent: changePercent(current, previous),
+          baseBefore,
+          percentOfExisting: percentOfBase(current, baseBefore)
+        };
+      }
+
+      const [lifetimeRevenueAggregate] = await Purchase.aggregate([
+        { $match: purchaseMatchBase },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: '$amountPaid' },
+            transactions: { $sum: 1 }
+          }
+        }
+      ]);
+
+      const lifetimeRevenue = lifetimeRevenueAggregate?.total || 0;
+      const lifetimeTransactions = lifetimeRevenueAggregate?.transactions || 0;
+
       const totalUsers = await User.countDocuments();
       const activeUsers = await User.countDocuments({ isActive: true });
-      const pendingUsers = await User.countDocuments({ pendingVerification: true });
-      
-      // Content stats
-      const totalContent = await Content.countDocuments();
-      const movies = await Content.countDocuments({ contentType: 'Movie' });
-      const series = await Content.countDocuments({ contentType: 'Series' });
-      const published = await Content.countDocuments({ isPublished: true });
-      const drafts = await Content.countDocuments({ isPublished: false });
-      
-      // Revenue stats
-      const revenueData = await Purchase.aggregate([
-        { $match: { status: 'completed' } },
+      const inactiveUsers = totalUsers - activeUsers;
+
+      const allowedContentTypes = ['Movie', 'Series', 'Episode', 'Season'];
+      const requestedContentType =
+        typeof req.query.contentType === 'string' && allowedContentTypes.includes(req.query.contentType)
+          ? req.query.contentType
+          : undefined;
+
+      const parsedLimit = parseInt(req.query.contentLimit as string, 10);
+      const contentLimit = Math.min(parsedLimit > 0 ? parsedLimit : 10, 50);
+
+      const calendarRangeInput = parseInt(req.query.calendarRangeDays as string, 10) || 30;
+      const calendarRangeDays = Math.min(Math.max(calendarRangeInput, 7), 90);
+
+      const userRankingInput = parseInt(req.query.userRankingLimit as string, 10) || 10;
+      const userRankingLimit = Math.min(Math.max(userRankingInput, 5), 50);
+
+      const allowedSortFields = new Set([
+        'uniqueUsers',
+        'totalRevenue',
+        'totalUnlocks',
+        'today',
+        'last14Days',
+        'last30Days',
+        'last90Days'
+      ]);
+      const sortByParam = typeof req.query.sortBy === 'string' && allowedSortFields.has(req.query.sortBy)
+        ? (req.query.sortBy as string)
+        : 'uniqueUsers';
+      const sortOrder = req.query.sortOrder === 'asc' ? 'asc' : 'desc';
+
+      const contentFilter: Record<string, any> = {};
+      if (requestedContentType) {
+        contentFilter.contentType = requestedContentType;
+      }
+      const totalContent = await Content.countDocuments(contentFilter);
+
+      const contentPurchaseMatch: Record<string, any> = {
+        ...purchaseMatchBase,
+        contentId: { $ne: null }
+      };
+      if (requestedContentType) {
+        contentPurchaseMatch.contentType = requestedContentType;
+      }
+
+      const aggregatedContent = await Purchase.aggregate([
+        { $match: contentPurchaseMatch },
         {
           $group: {
-            _id: null,
+            _id: '$contentId',
             totalRevenue: { $sum: '$amountPaid' },
-            totalTransactions: { $sum: 1 }
+            totalUnlocks: { $sum: 1 },
+            uniqueUsers: { $addToSet: '$userId' },
+            contentType: { $last: '$contentType' }
+          }
+        },
+        {
+          $project: {
+            contentId: '$_id',
+            totalRevenue: 1,
+            totalUnlocks: 1,
+            uniqueUsers: { $size: '$uniqueUsers' },
+            contentType: 1
           }
         }
       ]);
-      const revenue = revenueData[0] || { totalRevenue: 0, totalTransactions: 0 };
-      
-      // Wallet stats
-      const walletData = await User.aggregate([
+
+      const totalUnlocks = aggregatedContent.reduce((acc, item) => acc + (item.totalUnlocks || 0), 0);
+
+      const [totalClientsAggregate] = await Purchase.aggregate([
+        { $match: contentPurchaseMatch },
+        { $group: { _id: '$userId' } },
+        { $count: 'count' }
+      ]);
+      const totalClients = totalClientsAggregate?.count || 0;
+
+      const candidateCap = Math.min(Math.max(contentLimit * 3, contentLimit), 60);
+      const candidates = aggregatedContent
+        .sort((a, b) => {
+          if (b.uniqueUsers === a.uniqueUsers) {
+            return (b.totalUnlocks || 0) - (a.totalUnlocks || 0);
+          }
+          return b.uniqueUsers - a.uniqueUsers;
+        })
+        .slice(0, candidateCap);
+
+      const contentIds = candidates.map(item => item.contentId).filter(Boolean);
+      const rawContentDocs = await Content.find({ _id: { $in: contentIds } })
+        .select('title contentType posterImageUrl isPublished price');
+      const contentDocMap = new Map(rawContentDocs.map(doc => [doc._id.toString(), doc]));
+
+      const calendarStartDate = subtractDays(startOfToday, calendarRangeDays - 1);
+      const formatDate = (date: Date) => date.toISOString().slice(0, 10);
+      const calendarDates: string[] = [];
+      for (let i = 0; i < calendarRangeDays; i += 1) {
+        const day = new Date(calendarStartDate);
+        day.setDate(calendarStartDate.getDate() + i);
+        calendarDates.push(formatDate(day));
+      }
+
+      const userCalendarRaw = await User.aggregate([
+        { $match: { createdAt: { $gte: calendarStartDate } } },
         {
           $group: {
-            _id: null,
-            totalBalance: { $sum: '$walletBalance' },
-            totalBonusBalance: { $sum: '$bonusBalance' },
-            totalCombined: { $sum: { $add: ['$walletBalance', '$bonusBalance'] } }
+            _id: {
+              $dateToString: {
+                format: '%Y-%m-%d',
+                date: '$createdAt'
+              }
+            },
+            count: { $sum: 1 }
           }
         }
       ]);
-      const wallet = walletData[0] || { totalBalance: 0, totalBonusBalance: 0, totalCombined: 0 };
+
+      const revenueCalendarRaw = await Purchase.aggregate([
+        { $match: { ...purchaseMatchBase, createdAt: { $gte: calendarStartDate } } },
+        {
+          $group: {
+            _id: {
+              $dateToString: {
+                format: '%Y-%m-%d',
+                date: '$createdAt'
+              }
+            },
+            total: { $sum: '$amountPaid' }
+          }
+        }
+      ]);
+
+      const userCalendarMap = new Map(userCalendarRaw.map(item => [item._id, item.count]));
+      const revenueCalendarMap = new Map(revenueCalendarRaw.map(item => [item._id, item.total]));
+
+      const calendarSeries = calendarDates.map(date => ({
+        date,
+        users: userCalendarMap.get(date) || 0,
+        revenue: revenueCalendarMap.get(date) || 0
+      }));
+
+      const calendarInsightPayload = {
+        rangeDays: calendarRangeDays,
+        startDate: calendarDates[0] || formatDate(calendarStartDate),
+        endDate: calendarDates[calendarDates.length - 1] || formatDate(startOfToday),
+        series: calendarSeries
+      };
+
+      const countUniquePurchasersBetween = async (
+        contentId: mongoose.Types.ObjectId,
+        startDate: Date,
+        endDate: Date
+      ) => {
+        if (startDate >= endDate) {
+          return 0;
+        }
+
+        const matchStage: Record<string, any> = {
+          ...purchaseMatchBase,
+          contentId,
+          createdAt: { $gte: startDate, $lt: endDate }
+        };
+
+        if (requestedContentType) {
+          matchStage.contentType = requestedContentType;
+        }
+
+        const [result] = await Purchase.aggregate([
+          { $match: matchStage },
+          { $group: { _id: '$userId' } },
+          { $count: 'count' }
+        ]);
+        return result?.count || 0;
+      };
+
+      const buildUserRanking = async (
+        startDate: Date,
+        endDate: Date,
+        limit: number
+      ): Promise<Array<{ userId: mongoose.Types.ObjectId; unlocks: number; revenue: number; uniqueContent: number }>> => {
+        if (limit <= 0 || startDate >= endDate) {
+          return [];
+        }
+
+        return Purchase.aggregate([
+          {
+            $match: {
+              ...purchaseMatchBase,
+              contentId: { $ne: null },
+              createdAt: { $gte: startDate, $lt: endDate }
+            }
+          },
+          {
+            $group: {
+              _id: '$userId',
+              unlocks: { $sum: 1 },
+              revenue: { $sum: '$amountPaid' },
+              contentSet: { $addToSet: '$contentId' }
+            }
+          },
+          {
+            $project: {
+              userId: '$_id',
+              unlocks: 1,
+              revenue: 1,
+              uniqueContent: { $size: '$contentSet' }
+            }
+          },
+          { $sort: { unlocks: -1, revenue: -1 } },
+          { $limit: limit }
+        ]);
+      };
+
+      type ContentPerformanceEntry = {
+        contentId: string;
+        title: string;
+        contentType: string;
+        posterImageUrl?: string;
+        totalRevenue: number;
+        totalUnlocks: number;
+        uniqueUsers: number;
+        overTime: {
+          today: number;
+          last14Days: number;
+          last30Days: number;
+          last90Days: number;
+        };
+        weekly: {
+          current: number;
+          previous: number;
+          currentRank: number | null;
+          previousRank: number | null;
+        };
+      };
+
+      const performance: ContentPerformanceEntry[] = [];
+
+      for (const item of candidates) {
+        if (!item.contentId) {
+          continue;
+        }
+
+        const contentObjectId =
+          typeof item.contentId === 'string'
+            ? new mongoose.Types.ObjectId(item.contentId)
+            : item.contentId;
+
+        const [
+          todayUsers,
+          last14Users,
+          last30Users,
+          last90Users,
+          currentWeekUsers,
+          previousWeekUsers
+        ] = await Promise.all([
+          countUniquePurchasersBetween(contentObjectId, frames.today.start, frames.today.end),
+          countUniquePurchasersBetween(contentObjectId, frames.last14Days.start, frames.last14Days.end),
+          countUniquePurchasersBetween(contentObjectId, frames.last30Days.start, frames.last30Days.end),
+          countUniquePurchasersBetween(contentObjectId, frames.last90Days.start, frames.last90Days.end),
+          countUniquePurchasersBetween(contentObjectId, frames.thisWeek.start, frames.thisWeek.end),
+          countUniquePurchasersBetween(
+            contentObjectId,
+            frames.thisWeek.previousStart,
+            frames.thisWeek.previousEnd
+          )
+        ]);
+
+        const metadata = contentDocMap.get(contentObjectId.toString());
+
+        performance.push({
+          contentId: contentObjectId.toString(),
+          title: metadata?.title || 'Unknown content',
+          contentType: metadata?.contentType || item.contentType || 'Unknown',
+          posterImageUrl: metadata?.posterImageUrl,
+          totalRevenue: item.totalRevenue || 0,
+          totalUnlocks: item.totalUnlocks || 0,
+          uniqueUsers: item.uniqueUsers || 0,
+          overTime: {
+            today: todayUsers,
+            last14Days: last14Users,
+            last30Days: last30Users,
+            last90Days: last90Users
+          },
+          weekly: {
+            current: currentWeekUsers,
+            previous: previousWeekUsers,
+            currentRank: null,
+            previousRank: null
+          }
+        });
+      }
+
+      const assignRank = (
+        entries: ContentPerformanceEntry[],
+        selector: (entry: ContentPerformanceEntry) => number,
+        assign: (entry: ContentPerformanceEntry, rank: number | null) => void
+      ) => {
+        const sorted = [...entries].sort((a, b) => {
+          const aMetric = selector(a);
+          const bMetric = selector(b);
+          if (bMetric === aMetric) {
+            return (b.totalRevenue || 0) - (a.totalRevenue || 0);
+          }
+          return bMetric - aMetric;
+        });
+
+        sorted.forEach((entry, index) => {
+          const metric = selector(entry);
+          assign(entry, metric > 0 ? index + 1 : null);
+        });
+      };
+
+      assignRank(performance, entry => entry.weekly.current, (entry, rank) => {
+        entry.weekly.currentRank = rank;
+      });
+
+      assignRank(performance, entry => entry.weekly.previous, (entry, rank) => {
+        entry.weekly.previousRank = rank;
+      });
+
+      const getSortMetric = (entry: ContentPerformanceEntry) => {
+        switch (sortByParam) {
+          case 'totalRevenue':
+            return entry.totalRevenue;
+          case 'totalUnlocks':
+            return entry.totalUnlocks;
+          case 'today':
+            return entry.overTime.today;
+          case 'last14Days':
+            return entry.overTime.last14Days;
+          case 'last30Days':
+            return entry.overTime.last30Days;
+          case 'last90Days':
+            return entry.overTime.last90Days;
+          default:
+            return entry.uniqueUsers;
+        }
+      };
+
+      performance.sort((a, b) => {
+        const aMetric = getSortMetric(a);
+        const bMetric = getSortMetric(b);
+        if (sortOrder === 'asc') {
+          return aMetric - bMetric;
+        }
+        return bMetric - aMetric;
+      });
+
+      const finalPerformance = performance.slice(0, contentLimit).map((entry, index) => ({
+        ...entry,
+        rank: index + 1
+      }));
+
+      const contentWeeklyRankings = finalPerformance.map(entry => ({
+        contentId: entry.contentId,
+        title: entry.title,
+        contentType: entry.contentType,
+        currentRank: entry.weekly.currentRank,
+        previousRank: entry.weekly.previousRank,
+        currentWeekUsers: entry.weekly.current,
+        previousWeekUsers: entry.weekly.previous
+      }));
+
+      const [currentUserRankingRaw, previousUserRankingRaw] = await Promise.all([
+        buildUserRanking(frames.thisWeek.start, frames.thisWeek.end, userRankingLimit),
+        buildUserRanking(frames.thisWeek.previousStart, frames.thisWeek.previousEnd, userRankingLimit * 2)
+      ]);
+
+      const previousUserRankMap = new Map<string, number>();
+      previousUserRankingRaw.forEach((entry, index) => {
+        previousUserRankMap.set(entry.userId.toString(), index + 1);
+      });
+
+      const userIdsForDetails = Array.from(
+        new Set([
+          ...currentUserRankingRaw.map(entry => entry.userId.toString()),
+          ...previousUserRankingRaw.map(entry => entry.userId.toString())
+        ])
+      );
+
+      type LeanUserProfile = Pick<IUser, 'username' | 'email' | 'phoneNumber' | 'role'> & {
+        _id: mongoose.Types.ObjectId;
+      };
+
+      const rawProfiles = await User.find({ _id: { $in: userIdsForDetails } })
+        .select('username email phoneNumber role')
+        .lean<LeanUserProfile>();
+
+      const userProfiles: LeanUserProfile[] = Array.isArray(rawProfiles) ? rawProfiles : [];
+
+      const userProfileMap = new Map<string, LeanUserProfile>(
+        userProfiles.map(profile => [profile._id.toString(), profile])
+      );
+
+      const userRankingEntries = currentUserRankingRaw.map((entry, index) => {
+        const userIdStr = entry.userId.toString();
+        const profile = userProfileMap.get(userIdStr);
+        return {
+          userId: userIdStr,
+          username: profile?.username || 'Unknown user',
+          email: profile?.email || null,
+          phoneNumber: profile?.phoneNumber || null,
+          role: profile?.role || null,
+          unlocks: entry.unlocks,
+          revenue: entry.revenue,
+          uniqueContent: entry.uniqueContent,
+          currentRank: index + 1,
+          previousRank: previousUserRankMap.get(userIdStr) ?? null
+        };
+      });
 
       res.status(200).json({
         status: 'success',
         data: {
-          overview: {
-            totalUsers,
-            activeUsers,
-            pendingUsers,
-            newUsersToday: 0 // Could add date filtering
-          },
-          content: {
-            totalContent,
-            movies,
-            series,
-            published,
-            drafts
+          generatedAt: now,
+          users: {
+            totals: {
+              total: totalUsers,
+              active: activeUsers,
+              inactive: inactiveUsers
+            },
+            growth: userGrowth,
+            rankings: {
+              timeframe: {
+                label: 'thisWeek',
+                start: frames.thisWeek.start,
+                end: frames.thisWeek.end,
+                previousStart: frames.thisWeek.previousStart,
+                previousEnd: frames.thisWeek.previousEnd
+              },
+              limit: userRankingLimit,
+              entries: userRankingEntries
+            }
           },
           revenue: {
-            totalRevenue: revenue.totalRevenue,
-            currency: 'RWF'
+            currency: 'RWF',
+            lifetime: {
+              amount: lifetimeRevenue,
+              transactions: lifetimeTransactions
+            },
+            growth: revenueGrowth
           },
-          transactions: {
-            total: revenue.totalTransactions,
-            successful: revenue.totalTransactions
+          content: {
+            totals: {
+              totalContent,
+              totalClients,
+              totalUnlocks,
+              trackedContent: aggregatedContent.length
+            },
+            performance: finalPerformance,
+            rankings: {
+              timeframe: {
+                label: 'thisWeek',
+                start: frames.thisWeek.start,
+                end: frames.thisWeek.end,
+                previousStart: frames.thisWeek.previousStart,
+                previousEnd: frames.thisWeek.previousEnd
+              },
+              entries: contentWeeklyRankings
+            },
+            appliedFilters: {
+              contentType: requestedContentType || null,
+              sortBy: sortByParam,
+              sortOrder,
+              limit: contentLimit
+            }
           },
-          walletStats: {
-            totalBalance: wallet.totalBalance,
-            totalBonusBalance: wallet.totalBonusBalance,
-            totalCombined: wallet.totalCombined
-          }
-        },
+          calendarInsights: calendarInsightPayload
+        }
       });
     } catch (error) {
       next(error);
