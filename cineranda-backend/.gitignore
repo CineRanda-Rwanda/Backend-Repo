@@ -1,6 +1,8 @@
 # Dependencies
 /node_modules
-
+#Budget
+BUDGET.md
+FINAL_BUDGET.md
 # Build output
 /dist
 /build
