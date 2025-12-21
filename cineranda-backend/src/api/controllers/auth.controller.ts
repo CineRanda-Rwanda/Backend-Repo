@@ -445,16 +445,19 @@ export class AuthController {
       }
 
       const resetToken = await this.authService.forgotPassword(email);
+      if (!resetToken) {
+        return next(new AppError('Account with this email does not exist.', 404));
+      }
 
       // In a real app, you would email the token to the user here.
       // For now, we send a generic message.
       const response: { status: string; message: string; resetToken?: string } = {
         status: 'success',
-        message: 'If an account with that email exists, a password reset token has been generated.',
+        message: 'Password reset token generated successfully.',
       };
 
       // For development/testing, we can include the token in the response.
-      if (process.env.NODE_ENV === 'development' && resetToken) {
+      if (process.env.NODE_ENV === 'development') {
         response.resetToken = resetToken;
       }
 
@@ -614,15 +617,18 @@ export class AuthController {
       }
 
       const resetCode = await this.authService.createPinResetRequest(phoneNumber);
+      if (!resetCode) {
+        return next(new AppError('Account with this phone number does not exist.', 404));
+      }
 
       const response: { status: string; message: string; resetCode?: string } = {
         status: 'success',
-        message: 'If an account with that phone number exists, a reset code has been sent.',
+        message: 'PIN reset code generated successfully.',
       };
 
       // For development/testing, we can return the code in the response.
       // In production, this should be removed.
-      if (process.env.NODE_ENV === 'development' && resetCode) {
+      if (process.env.NODE_ENV === 'development') {
         response.resetCode = resetCode;
       }
 
