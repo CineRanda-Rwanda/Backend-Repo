@@ -4,7 +4,6 @@ import { VerificationService } from '../../core/services/verification.service';
 import { NotificationService } from '../../core/services/notification.service';
 import AppError from '../../utils/AppError';
 import { User, IUser } from '../../data/models/user.model';
-import { Settings } from '../../data/models/settings.model';
 import config from '../../config';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -229,42 +228,16 @@ export class AuthController {
       user.verificationCode = undefined;
       user.verificationCodeExpires = undefined;
       
-      // Now apply welcome bonus
-      try {
-        const settings = await Settings.findOne();
-        if (settings && settings.welcomeBonusAmount > 0) {
-          // Initialize wallet if not exists
-          if (!user.wallet) {
-            user.wallet = { balance: 0, bonusBalance: 0, transactions: [] };
-          }
-          
-          // Add welcome bonus to bonusBalance
-          user.wallet.bonusBalance += settings.welcomeBonusAmount;
-          user.wallet.transactions.push({
-            amount: settings.welcomeBonusAmount,
-            type: 'welcome-bonus',
-            description: 'Welcome to Randa Plus!',
-            createdAt: new Date()
-          });
-        }
-      } catch (error) {
-        console.error('Error applying welcome bonus:', error);
-      }
-      
       await user.save();
       
       // Automatically log the user in after successful verification
       const authResult = await this.authService.login(phoneNumber, pin);
 
-      // Get welcome bonus info for response
-      const settings = await Settings.findOne();
-      const welcomeBonusAmount = settings?.welcomeBonusAmount || 0;
-
       // Send welcome notification
       await this.notificationService.sendSystemNotification(
         (user._id as any).toString(),
         'Welcome to Randa Plus!',
-        `Welcome ${user.username}! We're excited to have you on board.${welcomeBonusAmount > 0 ? ` You've received ${welcomeBonusAmount} RWF as a welcome bonus.` : ''}`,
+        `Welcome ${user.username}! We're excited to have you on board.`,
         {
           actionType: 'profile',
           priority: 'high'
@@ -276,8 +249,7 @@ export class AuthController {
         token: authResult.token,
         refreshToken: authResult.refreshToken,
         data: {
-          user: authResult.user,
-          welcomeBonus: welcomeBonusAmount
+          user: authResult.user
         }
       });
     } catch (error) {

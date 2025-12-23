@@ -160,12 +160,16 @@ export class NotificationController {
       const page = parseInt(req.query.page as string) || 1;
       const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
       const unreadOnly = req.query.unreadOnly === 'true';
+      const archivedOnly = req.query.archivedOnly === 'true';
+      const includeArchived = req.query.includeArchived === 'true';
 
       const { notifications, total, unreadCount } = await userNotificationRepository.getUserNotifications({
         userId,
         page,
         limit,
         unreadOnly,
+        archivedOnly,
+        includeArchived,
       });
 
       res.status(200).json({
@@ -212,6 +216,32 @@ export class NotificationController {
     }
   }
 
+  // User: Mark notification as unread
+  async markAsUnread(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const userId = req.user!._id.toString();
+      const { notificationId } = req.params;
+
+      const notification = await userNotificationRepository.markAsUnread(userId, notificationId);
+
+      if (!notification) {
+        throw new AppError('Notification not found or already unread', 404);
+      }
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Notification marked as unread',
+        data: {
+          notificationId: notification._id,
+          isRead: notification.isRead,
+          readAt: notification.readAt,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   // User: Mark all notifications as read
   async markAllAsRead(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -246,6 +276,58 @@ export class NotificationController {
       res.status(200).json({
         status: 'success',
         message: 'Notification deleted',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // User: Archive notification
+  async archiveNotification(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const userId = req.user!._id.toString();
+      const { notificationId } = req.params;
+
+      const notification = await userNotificationRepository.archiveNotification(userId, notificationId);
+
+      if (!notification) {
+        throw new AppError('Notification not found or already archived', 404);
+      }
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Notification archived',
+        data: {
+          notificationId: notification._id,
+          isArchived: notification.isArchived,
+          archivedAt: notification.archivedAt,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // User: Restore archived notification
+  async restoreNotification(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const userId = req.user!._id.toString();
+      const { notificationId } = req.params;
+
+      const notification = await userNotificationRepository.restoreNotification(userId, notificationId);
+
+      if (!notification) {
+        throw new AppError('Notification not found or not archived', 404);
+      }
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Notification restored from archive',
+        data: {
+          notificationId: notification._id,
+          isArchived: notification.isArchived,
+          archivedAt: notification.archivedAt,
+        },
       });
     } catch (error) {
       next(error);

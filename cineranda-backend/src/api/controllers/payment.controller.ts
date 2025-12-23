@@ -776,17 +776,17 @@ export class PaymentController {
               await this.fulfillContentUnlock(purchase, tx_ref.toString());
             }
             
-            // Redirect to success page
-            return res.redirect(`${config.clientUrl}/payment/success?ref=${tx_ref}`);
+            // Redirect to success page (client route configurable via env)
+            return res.redirect(`${config.clientUrl}${config.paymentRedirect.successPath}?ref=${tx_ref}`);
           }
         }
       }
       
       // If payment failed or verification failed
-      return res.redirect(`${config.clientUrl}/payment/failed?ref=${tx_ref}`);
+      return res.redirect(`${config.clientUrl}${config.paymentRedirect.failedPath}?ref=${tx_ref}`);
     } catch (error) {
       console.error('Payment callback error:', error);
-      return res.redirect(`${config.clientUrl}/payment/failed`);
+      return res.redirect(`${config.clientUrl}${config.paymentRedirect.failedPath}`);
     }
   };
 

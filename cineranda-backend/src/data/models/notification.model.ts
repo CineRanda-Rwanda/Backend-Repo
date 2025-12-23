@@ -31,6 +31,8 @@ export interface IUserNotification extends Document {
   priority: 'low' | 'medium' | 'high';
   isRead: boolean;
   readAt?: Date;
+  isArchived: boolean;
+  archivedAt?: Date;
   receivedAt: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -156,6 +158,13 @@ const UserNotificationSchema = new Schema<IUserNotification>(
     readAt: {
       type: Date,
     },
+    isArchived: {
+      type: Boolean,
+      default: false,
+    },
+    archivedAt: {
+      type: Date,
+    },
     receivedAt: {
       type: Date,
       default: Date.now,
@@ -169,6 +178,7 @@ const UserNotificationSchema = new Schema<IUserNotification>(
 // Compound indexes for efficient queries
 UserNotificationSchema.index({ userId: 1, receivedAt: -1 });
 UserNotificationSchema.index({ userId: 1, isRead: 1 });
+UserNotificationSchema.index({ userId: 1, isArchived: 1 });
 UserNotificationSchema.index({ userId: 1, notificationId: 1 }, { unique: true });
 
 export const Notification = mongoose.model<INotification>('Notification', NotificationSchema);

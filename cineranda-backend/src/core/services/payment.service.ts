@@ -41,13 +41,18 @@ export class PaymentService {
     const txRef = `${txRefPrefix}-${v4()}`;
     const userId = String(user._id);
 
+    const customerEmail =
+      user.email ||
+      config.payment.defaultCustomerEmail ||
+      (user.phoneNumber ? `${user.phoneNumber}@randaplus.com` : 'payments@randaplus.com');
+
     const payload = {
       tx_ref: txRef,
       amount,
       currency: 'RWF',
       redirect_url: `${config.payment.callbackUrl}`,
       customer: {
-        email: user.email || `${user.phoneNumber}@randaplus.com`,
+        email: customerEmail,
         phonenumber: user.phoneNumber,
         name: user.username || user.phoneNumber
       },

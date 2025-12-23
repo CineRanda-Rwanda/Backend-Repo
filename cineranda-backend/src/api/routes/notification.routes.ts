@@ -34,9 +34,45 @@ router.put(
 );
 
 router.put(
+  '/:notificationId/unread',
+  authenticate,
+  notificationController.markAsUnread.bind(notificationController)
+);
+
+router.post(
+  '/:notificationId/unread',
+  authenticate,
+  notificationController.markAsUnread.bind(notificationController)
+);
+
+router.put(
   '/read-all',
   authenticate,
   notificationController.markAllAsRead.bind(notificationController)
+);
+
+router.put(
+  '/:notificationId/archive',
+  authenticate,
+  notificationController.archiveNotification.bind(notificationController)
+);
+
+router.post(
+  '/:notificationId/archive',
+  authenticate,
+  notificationController.archiveNotification.bind(notificationController)
+);
+
+router.put(
+  '/:notificationId/unarchive',
+  authenticate,
+  notificationController.restoreNotification.bind(notificationController)
+);
+
+router.post(
+  '/:notificationId/unarchive',
+  authenticate,
+  notificationController.restoreNotification.bind(notificationController)
 );
 
 router.delete(

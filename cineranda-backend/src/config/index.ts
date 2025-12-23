@@ -69,7 +69,8 @@ const config = {
       secretHash: process.env.FLUTTERWAVE_SECRET_HASH || ''
     },
     callbackUrl: process.env.PAYMENT_CALLBACK_URL || 'http://localhost:5000/api/v1/payments/callback',
-    webhookUrl: process.env.PAYMENT_WEBHOOK_URL || 'http://localhost:5000/api/v1/payments/webhook'
+    webhookUrl: process.env.PAYMENT_WEBHOOK_URL || 'http://localhost:5000/api/v1/payments/webhook',
+    defaultCustomerEmail: process.env.PAYMENT_DEFAULT_CUSTOMER_EMAIL || 'payments@randaplus.com'
   },
   
   admin: {
@@ -101,7 +102,12 @@ const config = {
   },
   
   // Add clientUrl for redirects
-  clientUrl: process.env.CLIENT_URL || 'http://localhost:3000'
+  clientUrl: process.env.CLIENT_URL || 'http://localhost:3000',
+
+  paymentRedirect: {
+    successPath: process.env.PAYMENT_SUCCESS_PATH || '/payment/success',
+    failedPath: process.env.PAYMENT_FAILED_PATH || '/payment/failed',
+  },
 };
 
 export default config;

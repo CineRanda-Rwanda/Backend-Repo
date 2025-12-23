@@ -74,11 +74,19 @@ export class UserNotificationRepository {
     page: number;
     limit: number;
     unreadOnly?: boolean;
+    includeArchived?: boolean;
+    archivedOnly?: boolean;
   }): Promise<{ notifications: IUserNotification[]; total: number; unreadCount: number }> {
     const query: any = { userId: filters.userId };
     
     if (filters.unreadOnly) {
       query.isRead = false;
+    }
+
+    if (filters.archivedOnly) {
+      query.isArchived = true;
+    } else if (!filters.includeArchived) {
+      query.isArchived = { $ne: true };
     }
 
     const skip = (filters.page - 1) * filters.limit;
@@ -90,8 +98,33 @@ export class UserNotificationRepository {
         .limit(filters.limit)
         .lean(),
       UserNotification.countDocuments(query),
-      UserNotification.countDocuments({ userId: filters.userId, isRead: false }),
+      UserNotification.countDocuments({ userId: filters.userId, isRead: false, isArchived: { $ne: true } }),
     ]);
+
+    // Backfill notification content for legacy records that may not have title/message stored.
+    const missingContentNotificationIds = (notifications as any[])
+      .filter((n) => !n?.title || !n?.message)
+      .map((n) => String(n.notificationId));
+
+    if (missingContentNotificationIds.length > 0) {
+      const baseNotifications = await Notification.find({ _id: { $in: missingContentNotificationIds } })
+        .select('title message actionType actionUrl imageUrl priority')
+        .lean();
+
+      const baseNotificationById = new Map(baseNotifications.map((n: any) => [String(n._id), n]));
+
+      (notifications as any[]).forEach((n) => {
+        const base = baseNotificationById.get(String(n.notificationId));
+        if (!base) return;
+
+        if (!n.title) n.title = base.title;
+        if (!n.message) n.message = base.message;
+        if (!n.actionType) n.actionType = base.actionType;
+        if (!n.actionUrl) n.actionUrl = base.actionUrl;
+        if (!n.imageUrl) n.imageUrl = base.imageUrl;
+        if (!n.priority) n.priority = base.priority;
+      });
+    }
 
     return { 
       notifications: notifications as IUserNotification[], 
@@ -105,6 +138,15 @@ export class UserNotificationRepository {
     return await UserNotification.findOneAndUpdate(
       { userId, _id: notificationId, isRead: false },
       { isRead: true, readAt: new Date() },
+      { new: true }
+    );
+  }
+
+  // Mark notification as unread
+  async markAsUnread(userId: string, notificationId: string): Promise<IUserNotification | null> {
+    return await UserNotification.findOneAndUpdate(
+      { userId, _id: notificationId, isRead: true },
+      { $set: { isRead: false }, $unset: { readAt: 1 } },
       { new: true }
     );
   }
@@ -124,8 +166,26 @@ export class UserNotificationRepository {
     return result.deletedCount > 0;
   }
 
+  // Archive notification
+  async archiveNotification(userId: string, notificationId: string): Promise<IUserNotification | null> {
+    return await UserNotification.findOneAndUpdate(
+      { userId, _id: notificationId, isArchived: { $ne: true } },
+      { $set: { isArchived: true, archivedAt: new Date() } },
+      { new: true }
+    );
+  }
+
+  // Restore archived notification
+  async restoreNotification(userId: string, notificationId: string): Promise<IUserNotification | null> {
+    return await UserNotification.findOneAndUpdate(
+      { userId, _id: notificationId, isArchived: true },
+      { $set: { isArchived: false }, $unset: { archivedAt: 1 } },
+      { new: true }
+    );
+  }
+
   // Get unread count for a user
   async getUnreadCount(userId: string): Promise<number> {
-    return await UserNotification.countDocuments({ userId, isRead: false });
+    return await UserNotification.countDocuments({ userId, isRead: false, isArchived: { $ne: true } });
   }
 }
