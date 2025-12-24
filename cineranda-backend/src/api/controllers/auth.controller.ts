@@ -1,4 +1,4 @@
-import { Request, Response, NextFunction } from 'express';
+import { Request, Response, NextFunction, CookieOptions } from 'express';
 import { AuthService } from '../../core/services/auth.service';
 import { VerificationService } from '../../core/services/verification.service';
 import { NotificationService } from '../../core/services/notification.service';
@@ -10,6 +10,9 @@ import jwt from 'jsonwebtoken';
 import { SignOptions, Secret } from 'jsonwebtoken'; // Add Secret type
 import type { StringValue } from 'ms';
 import mongoose, { Document } from 'mongoose';
+import crypto from 'crypto';
+import { OAuth2Client } from 'google-auth-library';
+import { URL, URLSearchParams } from 'url';
 
 // Define an interface for requests that have been authenticated
 interface AuthRequest extends Request {
@@ -35,11 +38,131 @@ export class AuthController {
   private authService: AuthService;
   private verificationService: VerificationService;
   private notificationService: NotificationService;
+  private googleOAuthClient?: OAuth2Client;
   
   constructor() {
     this.authService = new AuthService();
     this.verificationService = new VerificationService();
     this.notificationService = new NotificationService();
+  }
+
+  private getGoogleOAuthClient(): OAuth2Client {
+    const oauthConfig = config.oauth?.google;
+
+    if (!oauthConfig?.clientId || !oauthConfig?.clientSecret || !oauthConfig?.backendRedirectUri) {
+      throw new AppError('Google OAuth is not configured', 500);
+    }
+
+    if (!this.googleOAuthClient) {
+      this.googleOAuthClient = new OAuth2Client(
+        oauthConfig.clientId,
+        oauthConfig.clientSecret,
+        oauthConfig.backendRedirectUri
+      );
+    }
+
+    return this.googleOAuthClient;
+  }
+
+  private buildGoogleOAuthUrl(state: string): string {
+    const oauthConfig = config.oauth?.google;
+
+    if (!oauthConfig?.clientId || !oauthConfig?.backendRedirectUri) {
+      throw new AppError('Google OAuth is not configured', 500);
+    }
+
+    const params = new URLSearchParams({
+      client_id: oauthConfig.clientId,
+      redirect_uri: oauthConfig.backendRedirectUri,
+      response_type: 'code',
+      scope: oauthConfig.scope || 'openid email profile',
+      access_type: 'offline',
+      prompt: 'consent',
+      include_granted_scopes: 'true',
+      state,
+    });
+
+    return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+  }
+
+  private getOAuthCookieOptions(): CookieOptions {
+    return {
+      httpOnly: true,
+      secure: config.env === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 10 * 60 * 1000,
+    };
+  }
+
+  private clearOAuthCookies(res: Response): void {
+    const options: CookieOptions = {
+      httpOnly: true,
+      secure: config.env === 'production',
+      sameSite: 'lax',
+      path: '/',
+    };
+
+    res.clearCookie('oauth_state', options);
+    res.clearCookie('oauth_redirect', options);
+  }
+
+  private getCookieValue(req: Request, name: string): string | undefined {
+    const rawCookieHeader = req.headers.cookie;
+    if (!rawCookieHeader) {
+      return undefined;
+    }
+
+    const cookies = rawCookieHeader.split(';').map((cookie) => cookie.trim());
+    const target = cookies.find((cookie) => cookie.startsWith(`${name}=`));
+    if (!target) {
+      return undefined;
+    }
+
+    return decodeURIComponent(target.substring(name.length + 1));
+  }
+
+  private resolveFrontendRedirect(target?: string): string {
+    const fallback = config.oauth?.google?.defaultRedirectUri || `${config.clientUrl}/oauth/google/callback`;
+    if (!target) {
+      return fallback;
+    }
+
+    try {
+      const parsed = target.startsWith('http://') || target.startsWith('https://')
+        ? new URL(target)
+        : new URL(target, config.clientUrl);
+
+      if (!parsed.href.startsWith(config.clientUrl)) {
+        return fallback;
+      }
+
+      return parsed.toString();
+    } catch (error) {
+      return fallback;
+    }
+  }
+
+  private redirectWithError(res: Response, redirectUri: string, message: string, code = 'oauth_error'): void {
+    const redirectUrl = new URL(redirectUri);
+    const fragment = new URLSearchParams({ error: code, message });
+    redirectUrl.hash = fragment.toString();
+    res.redirect(redirectUrl.toString());
+  }
+
+  private async exchangeCodeForTokens(code: string) {
+    const oauthConfig = config.oauth?.google;
+    if (!oauthConfig?.backendRedirectUri) {
+      throw new AppError('Google OAuth is not configured', 500);
+    }
+
+    const client = this.getGoogleOAuthClient();
+    const { tokens } = await client.getToken({
+      code,
+      redirect_uri: oauthConfig.backendRedirectUri,
+    });
+
+    return tokens;
   }
   
   register = async (req: Request, res: Response, next: NextFunction) => {
@@ -370,6 +493,108 @@ export class AuthController {
         data: {
           user: result.user
         }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  startGoogleOAuth = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const redirectParam = typeof req.query.redirect_uri === 'string' ? req.query.redirect_uri : undefined;
+      const frontendRedirect = this.resolveFrontendRedirect(redirectParam);
+
+      const state = crypto.randomBytes(24).toString('hex');
+      const cookieOptions = this.getOAuthCookieOptions();
+      res.cookie('oauth_state', state, cookieOptions);
+      res.cookie('oauth_redirect', frontendRedirect, cookieOptions);
+
+      const authorizationUrl = this.buildGoogleOAuthUrl(state);
+      return res.redirect(authorizationUrl);
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  handleGoogleOAuthCallback = async (req: Request, res: Response, next: NextFunction) => {
+    const storedRedirect = this.getCookieValue(req, 'oauth_redirect');
+    const frontendRedirect = this.resolveFrontendRedirect(storedRedirect);
+
+    try {
+      const errorParam = typeof req.query.error === 'string' ? req.query.error : undefined;
+      const errorDescription = typeof req.query.error_description === 'string' ? req.query.error_description : undefined;
+
+      if (errorParam) {
+        return this.redirectWithError(
+          res,
+          frontendRedirect,
+          errorDescription || 'Google login was cancelled',
+          errorParam
+        );
+      }
+
+      const code = typeof req.query.code === 'string' ? req.query.code : undefined;
+      const state = typeof req.query.state === 'string' ? req.query.state : undefined;
+      const storedState = this.getCookieValue(req, 'oauth_state');
+
+      if (!code) {
+        return this.redirectWithError(res, frontendRedirect, 'Missing authorization code', 'missing_code');
+      }
+
+      if (!state || !storedState || state !== storedState) {
+        return this.redirectWithError(res, frontendRedirect, 'Invalid or expired OAuth state', 'invalid_state');
+      }
+
+      const tokens = await this.exchangeCodeForTokens(code);
+      if (!tokens.id_token) {
+        return this.redirectWithError(res, frontendRedirect, 'Google response did not include an ID token', 'invalid_token');
+      }
+
+      const authResult = await this.authService.loginWithGoogle(tokens.id_token);
+      this.clearOAuthCookies(res);
+
+      const redirectUrl = new URL(frontendRedirect);
+      const fragment = new URLSearchParams({
+        token: authResult.token,
+        refreshToken: authResult.refreshToken,
+        message: 'Signed in with Google',
+      });
+      redirectUrl.hash = fragment.toString();
+
+      res.redirect(redirectUrl.toString());
+      return;
+    } catch (error) {
+      this.clearOAuthCookies(res);
+      if (error instanceof AppError) {
+        this.redirectWithError(res, frontendRedirect, error.message, 'oauth_error');
+        return;
+      }
+      return next(error);
+    }
+  };
+
+  exchangeGoogleCode = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { code } = req.body || {};
+      if (!code || typeof code !== 'string') {
+        return next(new AppError('Authorization code is required', 400));
+      }
+
+      const tokens = await this.exchangeCodeForTokens(code);
+      if (!tokens.id_token) {
+        return next(new AppError('Google response did not include an ID token', 400));
+      }
+
+      const authResult = await this.authService.loginWithGoogle(tokens.id_token);
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Signed in with Google',
+        token: authResult.token,
+        refreshToken: authResult.refreshToken,
+        data: {
+          user: authResult.user,
+        },
       });
     } catch (error) {
       next(error);

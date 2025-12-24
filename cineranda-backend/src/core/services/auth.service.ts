@@ -29,10 +29,15 @@ export class AuthService {
     this.userRepository = new UserRepository();
     this.emailService = new EmailService();
     this.verificationService = new VerificationService();
-    const googleClientId = process.env.GOOGLE_CLIENT_ID;
+
+    const googleOauthConfig = config.oauth?.google;
+    const googleClientId = googleOauthConfig?.clientId || process.env.GOOGLE_CLIENT_ID || process.env.GOOGLE_OAUTH_CLIENT_ID;
+    const googleClientSecret = googleOauthConfig?.clientSecret || process.env.GOOGLE_CLIENT_SECRET || process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+    const googleRedirectUri = googleOauthConfig?.backendRedirectUri || process.env.GOOGLE_OAUTH_CALLBACK_URL;
+
     if (googleClientId) {
       this.googleAudience = googleClientId;
-      this.googleClient = new OAuth2Client(googleClientId);
+      this.googleClient = new OAuth2Client(googleClientId, googleClientSecret, googleRedirectUri);
     }
   }
 

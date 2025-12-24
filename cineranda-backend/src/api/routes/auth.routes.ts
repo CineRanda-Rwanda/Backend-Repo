@@ -11,6 +11,9 @@ router.post('/register', authController.register);
 router.post('/register/phone', authController.register);
 router.post('/register/email', authController.registerWithEmail);
 router.post('/register/google', authController.loginWithGoogle);
+router.get('/google', authController.startGoogleOAuth);
+router.get('/google/callback', authController.handleGoogleOAuthCallback);
+router.post('/google/exchange', authController.exchangeGoogleCode);
 
 // Alias for register - request verification code
 router.post('/request-verification', authController.register);
