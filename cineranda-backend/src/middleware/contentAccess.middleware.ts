@@ -131,7 +131,11 @@ export const checkEpisodeAccess = async (
         (pc: any) => pc.contentId.toString() === contentId
       );
       
-      if (seriesPurchase && seriesPurchase.episodeIdsAtPurchase) {
+      if (
+        seriesPurchase &&
+        Array.isArray(seriesPurchase.episodeIdsAtPurchase) &&
+        seriesPurchase.episodeIdsAtPurchase.length
+      ) {
         const episodeIdStr = episodeId.toString();
         const purchasedEpisodeIds = seriesPurchase.episodeIdsAtPurchase as string[];
         const wasAvailableAtPurchase = purchasedEpisodeIds.includes(episodeIdStr);
@@ -170,7 +174,10 @@ export const checkEpisodeAccess = async (
 
     if (seasonPurchase) {
       // Check if episode was added after season purchase
-      if (seasonPurchase.episodeIdsAtPurchase) {
+      if (
+        Array.isArray(seasonPurchase.episodeIdsAtPurchase) &&
+        seasonPurchase.episodeIdsAtPurchase.length
+      ) {
         const episodeIdStr = episodeId.toString();
         const purchasedEpisodeIds = seasonPurchase.episodeIdsAtPurchase as string[];
         const wasAvailableAtPurchase = purchasedEpisodeIds.includes(episodeIdStr);
