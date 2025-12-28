@@ -60,3 +60,4 @@ app.use(config.apiPrefix, routes);
 app.use(errorHandler);
 
 export { app };
+export default app;
